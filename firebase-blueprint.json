@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "User": {
+      "title": "System User",
+      "description": "System user including admins and sales representatives",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "pin": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "rep", "super_admin", "stock_keeper", "driver", "other"] },
+        "organizationId": { "type": "string" },
+        "customRoleName": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "name", "pin", "role", "organizationId"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Item in the main inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "stock": { "type": "number" },
+        "costPrice": { "type": "number" },
+        "minPrice": { "type": "number" },
+        "maxPrice": { "type": "number" },
+        "organizationId": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "Sale": {
+      "title": "Sale Record",
+      "description": "A sale or invoice record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "repId": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "total": { "type": "number" },
+        "createdAt": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of all users across all organizations"
+    },
+    "/inventory/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Main inventory items"
+    },
+    "/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Sales records"
+    },
+    "/customers/{customerId}": {
+      "schema": "object",
+      "description": "Customer records"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": "object",
+      "description": "Supplier records"
+    },
+    "/attendance/{recordId}": {
+      "schema": "object",
+      "description": "Attendance records"
+    },
+    "/aiactions/{actionId}": {
+      "schema": "object",
+      "description": "AI driven actions and requests"
+    },
+    "/organizations/{orgId}": {
+      "schema": "object",
+      "description": "Organization settings and status"
+    }
+  }
+}

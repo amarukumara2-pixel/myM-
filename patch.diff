@@ -1,0 +1,162 @@
+--- src/pages/AdminTabs.tsx
++++ src/pages/AdminTabs.tsx
+@@ -34,2 +34,9 @@
+ 
++  const [breakdown, setBreakdown] = useState<{
++    title: string;
++    grossProfit: number;
++    expensesAmount: number;
++    netProfit: number;
++    salesDetails: any[];
++    expenseDetails: any[];
++  } | null>(null);
++
+   const totalProducts = items.length;
+@@ -87,2 +94,37 @@
+ 
++  const handleShowTodayBreakdown = () => {
++    setBreakdown({
++      title: "Today's Profit Calculation",
++      grossProfit: todayGrossProfit,
++      expensesAmount: todayExpenses,
++      netProfit: todayNetProfit,
++      salesDetails: sales.filter(s => {
++        if (s.mode !== 'sale' && s.mode !== 'credit') return false;
++        if (s.status === 'cancelled') return false;
++        const d = new Date(s.createdAt || s.date || Date.now());
++        return d.toLocaleDateString() === todayStr;
++      }).map(s => {
++        let gp = 0;
++        (s.items || []).forEach((item: any) => {
++          if (!item.isReturn) {
++            gp += ((Number(item.price)||0) - (Number(item.costPrice)||0)) * (Number(item.qty)||0);
++          }
++        });
++        return { ...s, calculatedGrossProfit: gp };
++      }),
++      expenseDetails: expenses.filter(e => {
++        const d = e.date ? new Date(e.date) : new Date();
++        return d.toLocaleDateString() === todayStr;
++      })
++    });
++  };
++
++  const handleShowMonthlyBreakdown = () => {
++    setBreakdown({
++      title: "Monthly Profit Calculation",
++      grossProfit: monthlyGrossProfit,
++      expensesAmount: monthlyExpenses,
++      netProfit: monthlyNetProfit,
++      salesDetails: sales.filter(s => {
++        if (s.mode !== 'sale' && s.mode !== 'credit') return false;
++        if (s.status === 'cancelled') return false;
++        const d = new Date(s.createdAt || s.date || Date.now());
++        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
++      }).map(s => {
++        let gp = 0;
++        (s.items || []).forEach((item: any) => {
++          if (!item.isReturn) {
++            gp += ((Number(item.price)||0) - (Number(item.costPrice)||0)) * (Number(item.qty)||0);
++          }
++        });
++        return { ...s, calculatedGrossProfit: gp };
++      }),
++      expenseDetails: expenses.filter(e => {
++        const d = e.date ? new Date(e.date) : new Date();
++        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
++      })
++    });
++  };
++
+   const mockOverviewData = [
+@@ -101,4 +143,77 @@
+   return (
+-    <div className="space-y-6">
++    <div className="space-y-6 relative">
++      {breakdown && (
++        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
++          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
++            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
++              <h3 className="font-bold text-xl text-slate-800">{breakdown.title}</h3>
++              <button onClick={() => setBreakdown(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500">
++                <X size={20} />
++              </button>
++            </div>
++            <div className="p-6 overflow-y-auto space-y-6">
++              <div className="grid grid-cols-3 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
++                <div>
++                  <div className="text-xs font-bold text-slate-500 uppercase">Gross Profit</div>
++                  <div className="text-lg font-black text-emerald-600">Rs {breakdown.grossProfit.toLocaleString()}</div>
++                </div>
++                <div>
++                  <div className="text-xs font-bold text-slate-500 uppercase">Expenses</div>
++                  <div className="text-lg font-black text-rose-600">- Rs {breakdown.expensesAmount.toLocaleString()}</div>
++                </div>
++                <div className="border-l border-slate-200 pl-4">
++                  <div className="text-xs font-bold text-slate-500 uppercase">Net Profit</div>
++                  <div className="text-xl font-black text-blue-600">Rs {breakdown.netProfit.toLocaleString()}</div>
++                </div>
++              </div>
++
++              <div>
++                <h4 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
++                  <TrendingUp size={16} className="text-emerald-500" />
++                  Sales Contributing to Gross Profit ({breakdown.salesDetails.length})
++                </h4>
++                {breakdown.salesDetails.length === 0 ? (
++                  <p className="text-sm text-slate-500 italic">No sales recorded.</p>
++                ) : (
++                  <div className="space-y-2">
++                    {breakdown.salesDetails.map((s, idx) => (
++                      <div key={idx} className="flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl">
++                        <div>
++                          <div className="font-semibold text-sm text-slate-800">{s.id}</div>
++                          <div className="text-xs text-slate-500">{new Date(s.createdAt || s.date).toLocaleString()} • {s.repName}</div>
++                        </div>
++                        <div className="text-right">
++                          <div className="font-bold text-sm text-emerald-600">+ Rs {s.calculatedGrossProfit.toLocaleString()}</div>
++                          <div className="text-xs text-slate-400">Items: {s.items?.length || 0}</div>
++                        </div>
++                      </div>
++                    ))}
++                  </div>
++                )}
++              </div>
++
++              <div>
++                <h4 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
++                  <ArrowDownLeft size={16} className="text-rose-500" />
++                  Deducted Expenses ({breakdown.expenseDetails.length})
++                </h4>
++                {breakdown.expenseDetails.length === 0 ? (
++                  <p className="text-sm text-slate-500 italic">No expenses recorded.</p>
++                ) : (
++                  <div className="space-y-2">
++                    {breakdown.expenseDetails.map((e, idx) => (
++                      <div key={idx} className="flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl">
++                        <div>
++                          <div className="font-semibold text-sm text-slate-800">{e.desc || e.description || 'Expense'}</div>
++                          <div className="text-xs text-slate-500">{new Date(e.date).toLocaleString()}</div>
++                        </div>
++                        <div className="font-bold text-sm text-rose-600">- Rs {Number(e.amount).toLocaleString()}</div>
++                      </div>
++                    ))}
++                  </div>
++                )}
++              </div>
++            </div>
++            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
++              <button onClick={() => setBreakdown(null)} className="px-6 py-2 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700">Close</button>
++            </div>
++          </div>
++        </div>
++      )}
+       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+-        <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 p-6 rounded-2xl shadow-lg text-white flex items-center justify-between">
++        <div onClick={handleShowTodayBreakdown} className="bg-gradient-to-br from-emerald-500 to-emerald-700 p-6 rounded-2xl shadow-lg text-white flex items-center justify-between cursor-pointer hover:scale-[1.02] transition-transform">
+           <div>
+@@ -113,3 +228,3 @@
+ 
+-        <div className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-2xl shadow-lg text-white flex items-center justify-between">
++        <div onClick={handleShowMonthlyBreakdown} className="bg-gradient-to-br from-blue-500 to-blue-700 p-6 rounded-2xl shadow-lg text-white flex items-center justify-between cursor-pointer hover:scale-[1.02] transition-transform">
+           <div>

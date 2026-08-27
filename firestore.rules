@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper to check if user is signed in
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Allow access to all relevant collections if user is part of the organization
+    // Note: Since multi-tenancy is not strictly enforced by Auth yet in this app, 
+    // we allow any logged-in user to access MYM-BIZFLOW for now, or just allow all for the single-tenant setup.
+    // In a real pro app, we'd check if request.auth.uid exists in a users table with the correct orgId.
+    
+    match /ai_action_requests/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /main_return_stock/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /expenses/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /rep_locations/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /users/{document=**} {
+      allow read, write: if true; // Open temporarily for migration
+    }
+
+    match /inventory/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /sales/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /customers/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /suppliers/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /attendance/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /aiactions/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /settlements/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /organizations/{orgId} {
+      allow read: if true;
+      allow write: if false; // Only super admin via console
+    }
+    
+    // Legacy support for the 'system' collection used by the current code
+    match /system/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

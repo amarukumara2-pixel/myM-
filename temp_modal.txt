@@ -1,0 +1,350 @@
+import React, { useRef, useState } from 'react';
+import html2canvas from 'html2canvas';
+import { Send, Printer, FileText, X, Edit } from 'lucide-react';
+
+/**
+ * Safely runs an asynchronous function with filtered stylesheets to prevent html2canvas 
+ * from failing or logging warnings on CSS Color Module Level 4 "oklch" functions.
+ */
+async function withOklchBypass<T>(fn: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype, 'cssRules');
+  const rulesDescriptor = Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype, 'rules');
+
+  if (!descriptor) {
+    return await fn();
+  }
+
+  try {
+    Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', {
+      get() {
+        try {
+          const rules = descriptor.get?.call(this);
+          if (!rules) return rules;
+          const filtered = [];
+          for (let i = 0; i < rules.length; i++) {
+            try {
+              const rule = rules[i];
+              if (rule && rule.cssText && !rule.cssText.includes('oklch')) {
+                filtered.push(rule);
+              }
+            } catch (ruleErr) {
+              // Ignore cross-origin rules access errors
+            }
+          }
+          return filtered;
+        } catch (err) {
+          return [];
+        }
+      },
+      configurable: true
+    });
+
+    if (rulesDescriptor) {
+      Object.defineProperty(CSSStyleSheet.prototype, 'rules', {
+        get() {
+          try {
+            const rules = rulesDescriptor.get?.call(this);
+            if (!rules) return rules;
+            const filtered = [];
+            for (let i = 0; i < rules.length; i++) {
+              try {
+                const rule = rules[i];
+                if (rule && rule.cssText && !rule.cssText.includes('oklch')) {
+                  filtered.push(rule);
+                }
+              } catch (ruleErr) {
+                // Ignore cross-origin rules access errors
+              }
+            }
+            return filtered;
+          } catch (err) {
+            return [];
+          }
+        },
+        configurable: true
+      });
+    }
+
+    return await fn();
+  } finally {
+    // Restore original property descriptors
+    Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', descriptor);
+    if (rulesDescriptor) {
+      Object.defineProperty(CSSStyleSheet.prototype, 'rules', rulesDescriptor);
+    }
+  }
+}
+
+export function BillPreviewModal({ 
+  previewSale, 
+  onClose, 
+  onConfirmPrint, 
+  onConfirmShareImage, 
+  onConfirmShareText,
+  onEdit,
+  orgSettings 
+}: { 
+  previewSale: any; 
+  onClose: () => void; 
+  onConfirmPrint: (saleData: any) => Promise<void>; 
+  onConfirmShareImage: (saleData: any, imageBlob: Blob) => Promise<void>; 
+  onConfirmShareText: (saleData: any) => Promise<void>;
+  onEdit?: (saleData: any) => void;
+  orgSettings: any;
+}) {
+  const printRef = useRef<HTMLDivElement>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [preGeneratedBlob, setPreGeneratedBlob] = useState<Blob | null>(null);
+
+  React.useEffect(() => {
+    if (!previewSale) {
+      setPreGeneratedBlob(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      if (!printRef.current) return;
+      try {
+        const canvas = await withOklchBypass(async () => {
+          return await html2canvas(printRef.current!, { scale: 3, useCORS: true, logging: false });
+        });
+        canvas.toBlob((blob) => {
+          if (blob) {
+            setPreGeneratedBlob(blob);
+          }
+        }, 'image/png', 1.0);
+      } catch (err) {
+        console.error('Error pre-generating invoice image', err);
+      }
+    }, 450); // Give the modal DOM 450ms to render properly
+
+    return () => clearTimeout(timer);
+  }, [previewSale]);
+
+  if (!previewSale) return null;
+
+  const handleShareImage = async () => {
+    if (preGeneratedBlob) {
+      setIsProcessing(true);
+      try {
+        await onConfirmShareImage(previewSale, preGeneratedBlob);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setIsProcessing(false);
+      }
+    } else {
+      if (!printRef.current) return;
+      setIsProcessing(true);
+      try {
+        const canvas = await withOklchBypass(async () => {
+          return await html2canvas(printRef.current!, { scale: 3, useCORS: true, logging: false });
+        });
+        canvas.toBlob(async (blob) => {
+          if (blob) {
+            try {
+              await onConfirmShareImage(previewSale, blob);
+            } catch (err) {
+              console.error(err);
+            }
+          }
+          setIsProcessing(false);
+        }, 'image/png', 1.0);
+      } catch (err) {
+        console.error(err);
+        setIsProcessing(false);
+      }
+    }
+  };
+
+  const handleShareText = async () => {
+    setIsProcessing(true);
+    await onConfirmShareText(previewSale);
+    setIsProcessing(false);
+  };
+
+  const handlePrint = async () => {
+    setIsProcessing(true);
+    // Defer printing to RepDashboard which handles multiple copies for credit/half-payment
+    setTimeout(async () => {
+       await onConfirmPrint(previewSale);
+       setIsProcessing(false);
+    }, 50);
+  };
+
+  const salesItems = (previewSale.items || []).filter((i: any) => !i.isReturn);
+  const returnItems = (previewSale.items || []).filter((i: any) => i.isReturn);
+
+  const subTotalAmount = salesItems.reduce((acc: number, c: any) => acc + (c.isSample ? 0 : Number(c.price) * (Number(c.qty) || 0)), 0);
+  const returnAmount = returnItems.reduce((acc: number, c: any) => acc + (Number(c.price) * (Number(c.qty) || 0)), 0);
+  const discountRs = ((subTotalAmount - returnAmount) * (Number(previewSale.invoiceDiscount) || 0)) / 100;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl w-full max-w-md max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+        
+        {/* Header Options */}
+        <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50 rounded-t-3xl">
+          <h3 className="font-bold text-slate-800 text-lg">Bill Preview</h3>
+          <div className="flex gap-2">
+            {onEdit && (
+                <button onClick={() => onEdit(previewSale)} disabled={isProcessing} className="p-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-full transition-colors">
+                  <Edit size={20} />
+                </button>
+            )}
+            <button onClick={onClose} disabled={isProcessing} className="p-2 bg-slate-200 hover:bg-rose-100 hover:text-rose-600 rounded-full transition-colors">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable Preview Area */}
+        <div className="flex-1 overflow-y-auto p-6 bg-slate-100 flex justify-center">
+          
+          {/* Exactly 58mm width container styled like paper */}
+          <div 
+            id="thermal-print-area"
+            ref={printRef}
+            style={{ 
+              width: '58mm', 
+              minHeight: '110mm', 
+              color: '#111', 
+              fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif', 
+              boxSizing: 'border-box', 
+              fontSize: `${(orgSettings.printerFontSize || 13) - 2.5}px`, 
+              fontWeight: orgSettings.printerFontWeight || 400,
+              backgroundColor: '#ffffff',
+              paddingLeft: '2px',
+              paddingRight: '2px',
+              paddingTop: '8px',
+              position: 'relative',
+              overflow: 'hidden',
+              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+              filter: 'grayscale(100%)'
+            }}
+          >
+             <div style={{ textAlign: 'center', marginBottom: '6px', color: '#333' }}>
+                <h2 style={{ fontSize: `${(orgSettings.printerFontSize || 13) + 3}px`, margin: '4px 0 2px 0', fontWeight: 'bold', lineHeight: '1.2' }}>{orgSettings.name.toUpperCase()}</h2>
+                {orgSettings.address && <p style={{ margin: '1px 0', fontSize: '10px', fontWeight: 'normal' }}>{orgSettings.address}</p>}
+                {orgSettings.phone && (
+                  <div style={{ margin: '4px 0' }}>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: 'bold', 
+                      backgroundColor: '#333', 
+                      color: '#fff', 
+                      padding: '3px 10px 5px 10px',
+                      borderRadius: '2px',
+                      display: 'inline-block',
+                      lineHeight: '1.2'
+                    }}>
+                      {orgSettings.phone} / 078-4665382
+                    </span>
+                  </div>
+                )}
+             </div>
+             
+             <div style={{ borderTop: '1.5px dashed #000', margin: '8px 0' }}></div>
+
+             <table style={{ width: '100%', fontSize: `${(orgSettings.printerFontSize || 13) - 2.5}px`, lineHeight: '1.3', color: '#333' }}>
+               <tbody>
+                  <tr>
+                    <td style={{ verticalAlign: 'top', paddingRight: '2px', width: '55%' }}>
+                       To: <span style={{ fontWeight: 'bold', fontSize: `${(orgSettings.printerFontSize || 13) - 2}px` }}>{String(previewSale.customer || 'CASH CUSTOMER').toUpperCase()}</span>
+                       {previewSale.address && <div style={{ fontSize: '9px', marginTop: '1px', fontWeight: 'bold' }}>📍 {previewSale.address}</div>}
+                       {previewSale.locationStr && <div style={{ fontSize: '8px', marginTop: '1px', color: '#555' }}>GPS: {previewSale.locationStr}</div>}
+                    </td>
+                    <td style={{ verticalAlign: 'top', textAlign: 'right', width: '45%', fontSize: '10px' }}>
+                       Date: {new Date(previewSale.createdAt).toLocaleDateString()}<br/>
+                       Inv: <span style={{ fontWeight: 'bold' }}>#{previewSale.id.replace('INV-', '').replace('CR-', '').substring(0, 6)}</span><br/>
+                       <span style={{ fontSize: '9px', fontWeight: 'bold', color: '#000', textTransform: 'uppercase' }}>
+                         {previewSale.paymentType === 'Credit' ? 'CREDIT / ණය' : previewSale.paymentType === 'Half-payment' ? 'PARTIAL / කොටස්' : 'CASH / මුදල්'}
+                       </span>
+                    </td>
+                  </tr>
+               </tbody>
+             </table>
+
+             <div style={{ borderBottom: '1px solid #000', margin: '6px 0 4px 0' }}></div>
+
+             {previewSale.mode === 'credit' ? (
+               <div style={{ padding: '8px 2px', fontSize: '11px', color: '#333' }}>
+                 <div style={{ textAlign: 'center', marginBottom: '12px', fontWeight: 'bold', fontSize: '11.5px', borderBottom: '1px dashed #000', paddingBottom: '6px' }}>
+                   CREDIT SETTLEMENT / ණය පියවීම් ලැබුණි
+                 </div>
+                 
+                 <table style={{ width: '100%', fontSize: '10.5px', lineHeight: '1.6', color: '#333', borderCollapse: 'collapse' }}>
+                   <tbody>
+                     <tr>
+                        <td style={{ fontWeight: 'normal', padding: '2px 0' }}>කලින් තිබූ ණය (Previous Balance)</td>
+                       <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '2px 0' }}>
+                         Rs. {Number(previewSale.previousBalance || 0).toFixed(2)}
+                       </td>
+                     </tr>
+                     {previewSale.initialCredit > 0 && (
+                       <tr>
+                         <td style={{ fontWeight: 'normal', padding: '2px 0' }}>ආරම්භක ණය (Initial Credit)</td>
+                         <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '2px 0' }}>
+                           + Rs. {Number(previewSale.initialCredit || 0).toFixed(2)}
+                         </td>
+                       </tr>
+                     )}
+                     <tr style={{ color: '#10b981' }}>
+                       <td style={{ fontWeight: 'normal', padding: '2px 0' }}>අද ලැබුණු ගෙවීම (Payment Received)</td>
+                       <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '2px 0' }}>
+                         - Rs. {Number(previewSale.creditReceivedAmount || 0).toFixed(2)}
+                       </td>
+                     </tr>
+                     <tr style={{ borderTop: '2px solid #000', backgroundColor: '#000', color: '#fff' }}>
+                       <td style={{ fontWeight: 'bold', paddingTop: '10px', paddingBottom: '10px', paddingLeft: '6px', fontSize: '15px' }}>ණය ශේෂය (Final Balance)</td>
+                       <td style={{ textAlign: 'right', fontWeight: '900', paddingTop: '10px', paddingBottom: '10px', paddingRight: '6px', fontSize: '22px' }}>
+                         Rs. {Number(previewSale.newBalance || 0).toFixed(2)}
+                       </td>
+                     </tr>
+                   </tbody>
+                 </table>
+               </div>
+             ) : (
+               <>
+                 {/* Items Table */}
+                 <table style={{ width: '100%', fontSize: `${(orgSettings.printerFontSize || 13) - 3}px`, borderCollapse: 'collapse', color: '#222' }}>
+                   <thead>
+                     <tr style={{ borderBottom: '1px solid #000' }}>
+                       <th style={{ textAlign: 'left', padding: '2px 0', width: '12%', fontSize: '9px', fontWeight: 'bold' }}>QTY</th>
+                       <th style={{ textAlign: 'left', padding: '2px 0', width: '48%', fontSize: '9px', fontWeight: 'bold' }}>ITEM NAME / විස්තරය</th>
+                       <th style={{ textAlign: 'right', padding: '2px 0', width: '20%', fontSize: '9px', fontWeight: 'bold' }}>PRICE</th>
+                       <th style={{ textAlign: 'right', padding: '2px 0', width: '20%', fontSize: '9px', fontWeight: 'bold' }}>AMOUNT</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {salesItems.map((c: any, idx: number) => (
+                       <React.Fragment key={idx}>
+                         <tr style={{ borderBottom: c.freeQty > 0 || c.isSample ? 'none' : '1px dashed #ddd' }}>
+                           <td style={{ padding: '2px 0', fontWeight: 'normal', verticalAlign: 'top' }}>{c.qty}</td>
+                           <td style={{ padding: '2px 0', fontWeight: 'normal' }}>
+                             {c.isSample ? '[S] ' : ''}{c.name}
+                           </td>
+                           <td style={{ textAlign: 'right', padding: '2px 0', fontSize: '9px', opacity: 0.8 }}>{(Number(c.price)).toFixed(2)}</td>
+                           <td style={{ textAlign: 'right', padding: '2px 0', fontWeight: '900', fontSize: '12px', verticalAlign: 'top' }}>{c.isSample ? '0.00' : (Number(c.qty) * Number(c.price)).toFixed(2)}</td>
+                         </tr>
+                         {c.freeQty > 0 && (
+                           <tr style={{ borderBottom: '1px dashed #666' }}>
+                             <td style={{ padding: '0 0 2px 0', fontSize: '8.5px', fontStyle: 'italic', color: '#555', fontWeight: 'normal' }}>
+                                +{c.freeQty}
+                             </td>
+                             <td colSpan={3} style={{ padding: '0 0 2px 0', fontSize: '8.5px', fontStyle: 'italic', color: '#555', fontWeight: 'normal' }}>
+                                FREE UNITS (නොමිලේ ලැබුණු ඒකක)
+                             </td>
+                           </tr>
+                         )}
+                         {c.isSample && (
+                           <tr style={{ borderBottom: '1px dashed #666' }}>
+                             <td colSpan={4} style={{ padding: '0 0 2px 0', fontSize: '8.5px', fontStyle: 'italic', color: '#555', fontWeight: 'normal' }}>
+                                * Sample Value: Rs {(Number(c.qty) * Number(c.price)).toFixed(2)}
+                             </td>
+                           </tr>
+                         )}
+                       </React.Fragment>
+                     ))}
+                   </tbody>
+                 </table>

@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitives
+    function isSignedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function isAdmin() { return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    // Hardened helpers
+    function isStringSafe(val, max) { return val is string && val.size() <= max; }
+    function isNumberSafe(val) { return val is number; }
+
+    // Helpers per entity
+    function isValidInventory(data) {
+      return data.keys().hasAll(['name', 'qty', 'price']) && data.keys().size() <= 10 &&
+             isStringSafe(data.name, 100) && isNumberSafe(data.qty) && isNumberSafe(data.price);
+    }
+    
+    function isValidSale(data) {
+      return data.keys().hasAll(['repId', 'total', 'date']) && data.keys().size() <= 10 &&
+             data.repId == request.auth.uid && isNumberSafe(data.total) && isStringSafe(data.date, 64);
+    }
+
+    match /inventory/{itemId} {
+      // Admins only globally managed
+      allow read: if isSignedIn(); // Reps need to see inventory
+      allow create: if isAdmin() && isValidInventory(incoming());
+      allow update: if isAdmin() && isValidInventory(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'qty', 'price', 'cost', 'category']);
+      allow delete: if isAdmin();
+    }
+
+    match /sales/{saleId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.repId == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(saleId) && isValidSale(incoming());
+      // No updates to sales after being recorded (terminal state)
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /rep_inventory/{itemId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.repId == request.auth.uid);
+      // Only admins or system can adjust base rep inventory?
+      allow create, update: if isAdmin();
+    }
+
+    match /ai_action_requests/{reqId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.repId == request.auth.uid);
+      allow create: if isSignedIn() && incoming().keys().hasAll(['repId', 'payload']) && incoming().repId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /chats/{chatId} {
+      allow read: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && (isAdmin() || resource.data.userId == request.auth.uid);
+    }
+    
+    match /admins/{uid} {
+      allow read: if isSignedIn(); // Read-only to check role
+      allow write: if false; // Only bootstrapped or done via Google Cloud console
+    }
+  }
+}

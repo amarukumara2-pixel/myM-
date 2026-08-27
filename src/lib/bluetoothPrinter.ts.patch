@@ -1,0 +1,19 @@
+--- src/lib/bluetoothPrinter.ts
++++ src/lib/bluetoothPrinter.ts
+@@ -53,7 +53,16 @@
+   }
+ }
+ 
+-function generateEscPosImage(canvas: HTMLCanvasElement): Uint8Array {
++export function uint8ArrayToBase64(bytes: Uint8Array): string {
++    let binary = '';
++    const len = bytes.byteLength;
++    for (let i = 0; i < len; i++) {
++        binary += String.fromCharCode(bytes[i]);
++    }
++    return window.btoa(binary);
++}
++
++export function generateEscPosImage(canvas: HTMLCanvasElement): Uint8Array {
+     // 384 dots is the standard printable width for 58mm thermal printers
+     const targetWidth = 384;

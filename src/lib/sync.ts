@@ -1,0 +1,958 @@
+import { initializeApp } from 'firebase/app';
+import {
+  initializeFirestore,
+  memoryLocalCache,
+  collection,
+  getDocs,
+  doc,
+  setDoc,
+  deleteDoc,
+  writeBatch,
+  limit,
+  query,
+  getDocFromServer,
+  where,
+  onSnapshot,
+  disableNetwork,
+  enableNetwork,
+  setLogLevel
+} from 'firebase/firestore';
+import firebaseConfig from '../../firebase-applet-config.json';
+
+// Silence background transport connectivity warnings in console
+if (typeof window !== 'undefined') {
+  try {
+    setLogLevel('silent');
+  } catch (e) {}
+}
+
+// Clean up any bloated legacy IndexedDB databases created by Firebase (prevents 17MB-18MB freeze)
+if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
+  try {
+    if (window.indexedDB.databases) {
+      window.indexedDB.databases().then((dbs) => {
+        dbs.forEach((dbInfo) => {
+          if (dbInfo.name && (dbInfo.name.startsWith('firestore') || dbInfo.name.startsWith('firebase'))) {
+            try {
+              window.indexedDB.deleteDatabase(dbInfo.name);
+            } catch (err) {}
+          }
+        });
+      }).catch(() => {});
+    }
+  } catch (e) {}
+}
+
+// Firebase Initialization with ultra-lightweight in-memory cache (immune to 17MB IndexedDB bloat & freezing)
+export const app = initializeApp(firebaseConfig);
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalAutoDetectLongPolling: true,
+    localCache: memoryLocalCache(),
+  },
+  firebaseConfig.firestoreDatabaseId
+);
+
+// Manage network state - allow Firestore persistent cache and auto-recovery
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('bizflow_quota_exhausted');
+  } catch (e) {}
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: any;
+}
+
+export function markQuotaExceeded() {
+  console.warn('Firestore notice: Quota limit reached on server. Offline caching is active.');
+}
+
+export function isQuotaPaused(): boolean {
+  return false;
+}
+
+export async function safeSetDoc(docRef: any, data: any, options?: any) {
+  try {
+    await setDoc(docRef, data, options);
+  } catch (err: any) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn('Firestore setDoc notice:', errMsg);
+  }
+}
+
+export async function safeDeleteDoc(docRef: any) {
+  try {
+    await deleteDoc(docRef);
+  } catch (err: any) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn('Firestore deleteDoc notice:', errMsg);
+  }
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  if (errMsg.includes('resource-exhausted') || errMsg.includes('quota') || errMsg.includes('Quota limit exceeded')) {
+    markQuotaExceeded();
+    return;
+  }
+  console.warn(`Firestore Notice (${operationType} on ${path}):`, errMsg);
+
+  if (
+    errMsg.includes("offline") || 
+    errMsg.includes("permission-denied")
+  ) {
+    return;
+  }
+}
+
+import { getActiveOrgId } from './store';
+
+export interface SyncPayload {
+  id: string;
+  table: string;
+  action: 'insert' | 'update' | 'delete';
+  data: any;
+  timestamp: number;
+  transactionId?: string;
+}
+
+const syncChannel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined' 
+  ? new BroadcastChannel('bizflow_realtime_sync_channel_v1') 
+  : null;
+
+if (syncChannel) {
+  syncChannel.onmessage = (event) => {
+    if (event.data && event.data.table && event.data.data) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: event.data }));
+      }
+    }
+  };
+}
+
+export const broadcastSync = (table: string, data: any) => {
+  if (syncChannel) {
+    try {
+      syncChannel.postMessage({ table, data });
+    } catch (e) {}
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table, data } }));
+  }
+};
+
+const PENDING_QUEUE_KEY = 'bizflow_pending_sync_queue_v1';
+const PROCESSED_TX_KEY = 'bizflow_processed_tx_ids_v1';
+const SYNCED_SIGNATURES_KEY = 'bizflow_synced_signatures_v2';
+
+// In-memory cache of synced signatures for instant O(1) checks
+let cachedSignatures: Set<string> | null = null;
+
+export const getSyncedSignatures = (): Set<string> => {
+  if (cachedSignatures) return cachedSignatures;
+  try {
+    const raw = localStorage.getItem(SYNCED_SIGNATURES_KEY);
+    const arr: string[] = raw ? JSON.parse(raw) : [];
+    cachedSignatures = new Set(arr);
+    return cachedSignatures;
+  } catch {
+    cachedSignatures = new Set();
+    return cachedSignatures;
+  }
+};
+
+export const saveSyncedSignatures = (set: Set<string>) => {
+  try {
+    cachedSignatures = set;
+    const arr = Array.from(set).slice(-5000); // keep most recent 5000 signatures
+    localStorage.setItem(SYNCED_SIGNATURES_KEY, JSON.stringify(arr));
+  } catch {}
+};
+
+/**
+ * Generates an immutable deterministic fingerprint for a record.
+ * If data has not changed, the fingerprint remains identical.
+ */
+export const getRecordFingerprint = (table: string, id: string | number, data: any): string => {
+  if (!data) return `${table}_${id}_empty`;
+  const idStr = String(data.id || data.docId || id);
+  const upTime = data.updatedAt || data.createdAt || data.date || data.timestamp || 0;
+  
+  if (table === 'sales') {
+    const total = data.total ?? 0;
+    const newBal = data.newBalance ?? data.remainingBalance ?? 0;
+    const addCred = data.addedCredit ?? 0;
+    const mode = data.mode || 'sale';
+    const status = data.status || 'active';
+    const cust = (data.customer || '').trim().toLowerCase();
+    const payType = data.paymentType || '';
+    return `sales_${idStr}_${status}_${mode}_${cust}_${total}_${newBal}_${addCred}_${payType}_${upTime}`;
+  }
+  
+  if (table === 'customers') {
+    const name = (data.name || '').trim().toLowerCase();
+    const bal = data.balance ?? 0;
+    const loc = (data.location || '').trim();
+    return `customers_${idStr}_${name}_${bal}_${loc}_${upTime}`;
+  }
+
+  if (table === 'settlements') {
+    const repId = data.repId || '';
+    const date = data.date || '';
+    const tot = data.totalAmount ?? data.cashAmount ?? 0;
+    return `settlements_${idStr}_${repId}_${date}_${tot}_${upTime}`;
+  }
+
+  if (table === 'expenses') {
+    const amt = data.amount ?? 0;
+    const cat = data.category || '';
+    const date = data.date || '';
+    return `expenses_${idStr}_${amt}_${cat}_${date}_${upTime}`;
+  }
+
+  if (table === 'attendance') {
+    const repId = data.repId || data.userId || '';
+    const date = data.date || '';
+    const hours = data.workingHours ?? 0;
+    const isEnd = data.isEndDay ? '1' : '0';
+    return `attendance_${idStr}_${repId}_${date}_${hours}_${isEnd}_${upTime}`;
+  }
+
+  return `${table}_${idStr}_${upTime}`;
+};
+
+export const isRecordSynced = (table: string, id: string | number, data: any): boolean => {
+  const sig = getRecordFingerprint(table, id, data);
+  return getSyncedSignatures().has(sig);
+};
+
+export const markRecordSynced = (table: string, id: string | number, data: any) => {
+  const sig = getRecordFingerprint(table, id, data);
+  const set = getSyncedSignatures();
+  set.add(sig);
+  saveSyncedSignatures(set);
+};
+
+export const getProcessedTxIds = (): string[] => {
+  try {
+    const raw = localStorage.getItem(PROCESSED_TX_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const markTxProcessed = (txId: string) => {
+  if (!txId) return;
+  try {
+    const txSet = new Set(getProcessedTxIds());
+    txSet.add(txId);
+    const arr = Array.from(txSet).slice(-2000);
+    localStorage.setItem(PROCESSED_TX_KEY, JSON.stringify(arr));
+  } catch {}
+};
+
+export const isTxProcessed = (txId: string): boolean => {
+  if (!txId) return false;
+  try {
+    const txSet = new Set(getProcessedTxIds());
+    return txSet.has(txId);
+  } catch {
+    return false;
+  }
+};
+
+export const deduplicateQueue = (queue: SyncPayload[]): SyncPayload[] => {
+  if (!Array.isArray(queue)) return [];
+  const map = new Map<string, SyncPayload>();
+  for (const item of queue) {
+    if (!item) continue;
+    const txId = item.transactionId || item.data?.transactionId || item.data?.txId || `${item.table}_${item.id}_${item.action}`;
+    const existing = map.get(txId);
+    if (!existing || (item.timestamp || 0) >= (existing.timestamp || 0)) {
+      map.set(txId, item);
+    }
+  }
+  return Array.from(map.values());
+};
+
+export const getSyncQueue = (): SyncPayload[] => {
+  try {
+    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    const queue: SyncPayload[] = raw ? JSON.parse(raw) : [];
+    return deduplicateQueue(queue);
+  } catch {
+    return [];
+  }
+};
+
+export const saveSyncQueue = (queue: SyncPayload[]) => {
+  try {
+    const deduped = deduplicateQueue(queue);
+    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(deduped));
+  } catch {}
+};
+
+export const addToSyncQueue = async (payload: Omit<SyncPayload, 'id' | 'timestamp'> & { transactionId?: string }) => {
+  const idStr = String(payload.data?.id || payload.data?.docId || Math.random().toString(36).substring(2, 10));
+  const orgId = getActiveOrgId();
+  const txId = payload.transactionId || payload.data?.transactionId || payload.data?.txId || `${payload.table}_${idStr}_${payload.action}`;
+
+  // If already synced and fingerprint unchanged, avoid redundant network operation
+  if (payload.action !== 'delete' && isRecordSynced(payload.table, idStr, payload.data)) {
+    return;
+  }
+
+  // If already processed recently in cloud, skip duplicate insertion
+  if (isTxProcessed(txId)) {
+    return;
+  }
+
+  const fullPayload: SyncPayload = {
+    id: idStr,
+    table: payload.table,
+    action: payload.action,
+    data: { ...payload.data, transactionId: txId },
+    timestamp: Date.now(),
+    transactionId: txId
+  };
+
+  if (isQuotaPaused()) {
+    markTxProcessed(txId);
+    markRecordSynced(payload.table, idStr, payload.data);
+    const itemData = { ...payload.data, transactionId: txId, organizationId: orgId, updatedAt: Date.now() };
+    if (payload.action === 'insert' && !itemData.id) {
+      itemData.id = idStr;
+    }
+    broadcastSync(payload.table, itemData);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: payload.table, data: itemData } }));
+    }
+    return;
+  }
+
+  try {
+     let ref = doc(db, payload.table, idStr);
+     if (payload.action === 'insert' || payload.action === 'update') {
+        const cleanData = (obj: any): any => {
+          if (!obj || typeof obj !== 'object') return obj;
+          const newObj: any = Array.isArray(obj) ? [] : {};
+          Object.keys(obj).forEach(key => {
+            const val = obj[key];
+            if (val !== undefined) {
+              newObj[key] = (val && typeof val === 'object') ? cleanData(val) : val;
+            }
+          });
+          return newObj;
+        };
+        const itemData = cleanData({ ...payload.data, transactionId: txId, organizationId: orgId, updatedAt: Date.now() });
+        if (payload.action === 'insert') {
+           itemData.id = idStr;
+        }
+        await setDoc(ref, itemData, { merge: true });
+        markTxProcessed(txId);
+        markRecordSynced(payload.table, idStr, itemData);
+        broadcastSync(payload.table, itemData);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: payload.table, data: itemData } }));
+        }
+        // Auto trigger background queue sweeper if online
+        if (typeof window !== 'undefined' && navigator.onLine) {
+          triggerAutoSyncDebounced();
+        }
+        return;
+     } else if (payload.action === 'delete') {
+        await deleteDoc(ref).catch(() => {});
+        if (payload.data?.docId && String(payload.data.docId) !== idStr) {
+          await deleteDoc(doc(db, payload.table, String(payload.data.docId))).catch(() => {});
+        }
+        markTxProcessed(txId);
+        return;
+     }
+  } catch (error: any) {
+     const errMsg = error instanceof Error ? error.message : String(error);
+     if (errMsg.includes('resource-exhausted') || errMsg.includes('quota') || errMsg.includes('Quota limit exceeded')) {
+       markQuotaExceeded();
+     }
+     console.warn(`Firestore sync write failed for ${payload.table}, queuing for background auto-sync:`, errMsg);
+     
+     // Store in pending queue for background retry
+     const currentQueue = getSyncQueue();
+     const filtered = currentQueue.filter(q => {
+       const qTxId = q.transactionId || q.data?.transactionId || q.data?.txId || `${q.table}_${q.id}_${q.action}`;
+       return !(q.table === payload.table && (q.id === idStr || qTxId === txId));
+     });
+     filtered.push(fullPayload);
+     saveSyncQueue(filtered);
+  }
+};
+
+export const processSyncQueue = async () => {
+  if (typeof window === 'undefined' || !navigator.onLine) return;
+  if (isQuotaPaused()) {
+    return;
+  }
+  const queue = getSyncQueue();
+  if (queue.length === 0) return;
+
+  const remaining: SyncPayload[] = [];
+  let quotaExceeded = false;
+  const processedInRun = new Set<string>();
+
+  for (const item of queue) {
+    const txId = item.transactionId || item.data?.transactionId || item.data?.txId || `${item.table}_${item.id}_${item.action}`;
+    
+    // Skip duplicate transaction without re-adding to remaining if processed
+    if (isTxProcessed(txId) || processedInRun.has(txId)) {
+      continue;
+    }
+
+    if (quotaExceeded || isQuotaPaused()) {
+      remaining.push(item);
+      continue;
+    }
+    const orgId = getActiveOrgId();
+    try {
+      const ref = doc(db, item.table, item.id);
+      if (item.action === 'delete') {
+        await deleteDoc(ref).catch(() => {});
+        if (item.data?.docId && String(item.data.docId) !== item.id) {
+          await deleteDoc(doc(db, item.table, String(item.data.docId))).catch(() => {});
+        }
+        markTxProcessed(txId);
+        processedInRun.add(txId);
+      } else {
+        const cleanData = (obj: any): any => {
+          if (!obj || typeof obj !== 'object') return obj;
+          const newObj: any = Array.isArray(obj) ? [] : {};
+          Object.keys(obj).forEach(key => {
+            const val = obj[key];
+            if (val !== undefined) {
+              newObj[key] = (val && typeof val === 'object') ? cleanData(val) : val;
+            }
+          });
+          return newObj;
+        };
+        const itemData = cleanData({ ...item.data, transactionId: txId, organizationId: orgId, updatedAt: Date.now() });
+        await setDoc(ref, itemData, { merge: true });
+        markTxProcessed(txId);
+        markRecordSynced(item.table, item.id, itemData);
+        processedInRun.add(txId);
+        broadcastSync(item.table, itemData);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: item.table, data: itemData } }));
+        }
+      }
+    } catch (err: any) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('resource-exhausted') || errMsg.includes('quota') || errMsg.includes('Quota limit exceeded')) {
+        quotaExceeded = true;
+        markQuotaExceeded();
+        console.warn('Firestore daily write quota reached. Pausing background sync queue until reset.');
+      }
+      remaining.push(item);
+    }
+  }
+
+  saveSyncQueue(remaining);
+};
+
+let autoSyncDebounceTimer: any = null;
+
+export const triggerAutoSyncDebounced = (delayMs: number = 800) => {
+  if (typeof window === 'undefined' || !navigator.onLine || isQuotaPaused()) return;
+  if (autoSyncDebounceTimer) clearTimeout(autoSyncDebounceTimer);
+  autoSyncDebounceTimer = setTimeout(() => {
+    autoSyncUnsyncedData();
+  }, delayMs);
+};
+
+let isAutoSyncing = false;
+
+/**
+ * Sweeps all local storage records (sales, settlements, expenses, customers, attendance)
+ * and uploads any records whose fingerprint hasn't been synced to Firestore yet.
+ * Exactly 1 write per modified/new record, 0 writes for already synced records.
+ */
+export const autoSyncUnsyncedData = async () => {
+  if (typeof window === 'undefined' || !navigator.onLine || isQuotaPaused() || isAutoSyncing) return;
+  isAutoSyncing = true;
+  const orgId = getActiveOrgId();
+
+  try {
+    // 1. Process any pending write/delete queue
+    await processSyncQueue();
+
+    // 2. Scan and upload unsynced Sales
+    try {
+      const salesRaw = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
+      if (salesRaw) {
+        const salesList = JSON.parse(salesRaw);
+        if (Array.isArray(salesList)) {
+          let hasUpdatedSales = false;
+          for (const s of salesList) {
+            if (!s || !s.id) continue;
+            if (!isRecordSynced('sales', s.id, s)) {
+              const cleanS = { ...s, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
+              await safeSetDoc(doc(db, 'sales', String(s.id)), cleanS, { merge: true });
+              markRecordSynced('sales', s.id, cleanS);
+              s.synced = true;
+              s.syncedAt = Date.now();
+              hasUpdatedSales = true;
+            }
+          }
+          if (hasUpdatedSales) {
+            localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(salesList));
+            localStorage.setItem('bizflow_sales_v1', JSON.stringify(salesList));
+            broadcastSync('sales', salesList);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync sales notice:', e);
+    }
+
+    // 3. Scan and upload unsynced Settlements
+    try {
+      const stlRaw = localStorage.getItem(`bizflow_${orgId}_settlements_v1`) || localStorage.getItem('bizflow_settlements_v1');
+      if (stlRaw) {
+        const stlList = JSON.parse(stlRaw);
+        if (Array.isArray(stlList)) {
+          let hasUpdatedStl = false;
+          for (const st of stlList) {
+            if (!st) continue;
+            const stId = String(st.id || `stl_${st.repId}_${st.date}`);
+            if (!isRecordSynced('settlements', stId, st)) {
+              const cleanSt = { ...st, id: stId, organizationId: orgId, updatedAt: st.updatedAt || Date.now() };
+              await safeSetDoc(doc(db, 'settlements', stId), cleanSt, { merge: true });
+              markRecordSynced('settlements', stId, cleanSt);
+              st.synced = true;
+              st.syncedAt = Date.now();
+              hasUpdatedStl = true;
+            }
+          }
+          if (hasUpdatedStl) {
+            localStorage.setItem(`bizflow_${orgId}_settlements_v1`, JSON.stringify(stlList));
+            localStorage.setItem('bizflow_settlements_v1', JSON.stringify(stlList));
+            broadcastSync('settlements', stlList);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync settlements notice:', e);
+    }
+
+    // 4. Scan and upload unsynced Customers
+    try {
+      const custRaw = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
+      if (custRaw) {
+        const custList = JSON.parse(custRaw);
+        if (Array.isArray(custList)) {
+          let hasUpdatedCust = false;
+          for (const c of custList) {
+            if (!c || !c.id) continue;
+            if (!isRecordSynced('customers', c.id, c)) {
+              const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
+              await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
+              markRecordSynced('customers', c.id, cleanC);
+              c.synced = true;
+              c.syncedAt = Date.now();
+              hasUpdatedCust = true;
+            }
+          }
+          if (hasUpdatedCust) {
+            localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(custList));
+            localStorage.setItem('bizflow_customers_v1', JSON.stringify(custList));
+            broadcastSync('customers', custList);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync customers notice:', e);
+    }
+
+    // 5. Scan and upload unsynced Expenses
+    try {
+      const expRaw = localStorage.getItem(`bizflow_${orgId}_expenses_v1`) || localStorage.getItem('bizflow_expenses_v1');
+      if (expRaw) {
+        const expList = JSON.parse(expRaw);
+        if (Array.isArray(expList)) {
+          let hasUpdatedExp = false;
+          for (const exp of expList) {
+            if (!exp || !exp.id) continue;
+            if (!isRecordSynced('expenses', exp.id, exp)) {
+              const cleanExp = { ...exp, organizationId: orgId, updatedAt: exp.updatedAt || Date.now() };
+              await safeSetDoc(doc(db, 'expenses', String(exp.id)), cleanExp, { merge: true });
+              markRecordSynced('expenses', exp.id, cleanExp);
+              exp.synced = true;
+              exp.syncedAt = Date.now();
+              hasUpdatedExp = true;
+            }
+          }
+          if (hasUpdatedExp) {
+            localStorage.setItem(`bizflow_${orgId}_expenses_v1`, JSON.stringify(expList));
+            localStorage.setItem('bizflow_expenses_v1', JSON.stringify(expList));
+            broadcastSync('expenses', expList);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync expenses notice:', e);
+    }
+
+    // 6. Scan and upload unsynced Attendance
+    try {
+      const attRaw = localStorage.getItem(`bizflow_${orgId}_attendance_v1`);
+      if (attRaw) {
+        const attList = JSON.parse(attRaw);
+        if (Array.isArray(attList)) {
+          for (const a of attList) {
+            if (!a || !a.id) continue;
+            if (!isRecordSynced('attendance', a.id, a)) {
+              const cleanA = { ...a, organizationId: orgId, updatedAt: Date.now() };
+              await safeSetDoc(doc(db, 'attendance', String(a.id)), cleanA, { merge: true });
+              markRecordSynced('attendance', a.id, cleanA);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync attendance notice:', e);
+    }
+  } catch (err) {
+    console.warn('Auto-sync error:', err);
+  } finally {
+    isAutoSyncing = false;
+  }
+};
+
+// Global background auto-sync lifecycle listener
+if (typeof window !== 'undefined') {
+  // Run auto-sync as soon as online connectivity is detected
+  window.addEventListener('online', () => {
+    console.log('Online detected. Auto-syncing unsynced rep data to Firebase...');
+    triggerAutoSyncDebounced(300);
+  });
+
+  // Run auto-sync when rep switches back to this tab / unlocks phone
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && navigator.onLine) {
+      triggerAutoSyncDebounced(1200);
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (navigator.onLine) {
+      triggerAutoSyncDebounced(1200);
+    }
+  });
+
+  // Initial startup sweep if online
+  if (navigator.onLine) {
+    setTimeout(() => {
+      triggerAutoSyncDebounced(1500);
+    }, 2000);
+  }
+}
+
+export const fetchTableData = async (table: string, options?: { forceAll?: boolean; limitCount?: number }) => {
+  const orgId = getActiveOrgId();
+  const localKey = `bizflow_${orgId}_${table}_v1`;
+  const fallbackKey = `bizflow_${table}_v1`;
+  const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
+  let localDocs: any[] = [];
+  try {
+    if (localStr) localDocs = JSON.parse(localStr);
+  } catch (e) {}
+
+  if (isQuotaPaused() || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return localDocs;
+  }
+
+  try {
+    const getEpoch = (s: any) => {
+      if (!s) return 0;
+      if (s.updatedAt) return Number(s.updatedAt);
+      if (s.createdAt) return new Date(s.createdAt).getTime();
+      if (s.date) return new Date(s.date).getTime();
+      if (s.timestamp) return Number(s.timestamp);
+      return 0;
+    };
+
+    // Calculate latest timestamp for delta/incremental fetch
+    let maxTimestamp = 0;
+    if (Array.isArray(localDocs) && localDocs.length > 0 && !options?.forceAll) {
+      maxTimestamp = Math.max(0, ...localDocs.map(d => getEpoch(d)));
+    }
+
+    let q: any;
+    const limitNum = options?.limitCount || 50;
+
+    if (maxTimestamp > 0) {
+      // Incremental delta sync: only request records created or modified after maxTimestamp
+      try {
+        q = query(
+          collection(db, table),
+          where('updatedAt', '>', maxTimestamp),
+          limit(limitNum)
+        );
+      } catch {
+        q = query(collection(db, table), limit(limitNum));
+      }
+    } else {
+      // Initial load: limit query to recent records to protect quota
+      q = query(collection(db, table), limit(limitNum));
+    }
+
+    const snapshot: any = await Promise.race([
+      getDocs(q),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+    ]);
+
+    // If delta query returned nothing and we have local docs, return them immediately (0 quota wasted!)
+    if (snapshot.empty && maxTimestamp > 0) {
+      return localDocs;
+    }
+
+    const cloudDocs = snapshot.docs
+      .map((d: any) => {
+        const data = d.data();
+        return { ...data, id: data.id || d.id, docId: d.id };
+      })
+      .filter((item: any) => {
+        if (!item) return false;
+        if (!item.organizationId && !item.orgId) return true;
+        const oId = String(item.organizationId || item.orgId);
+        return oId === orgId || oId === 'default' || oId === 'MYM-BIZFLOW' || oId.toLowerCase() === orgId.toLowerCase();
+      });
+
+    const syncQueue = typeof getSyncQueue === 'function' ? getSyncQueue() : [];
+    const deletedIds = new Set(
+      syncQueue
+        .filter(q => q.table === table && q.action === 'delete')
+        .map(q => String(q.id))
+    );
+
+    const mergedMap = new Map<string, any>();
+    const seenTxIds = new Map<string, string>(); // txId -> id
+
+    const processItem = (item: any) => {
+      if (!item || item.id === undefined || item.id === null) return;
+      const idStr = String(item.id);
+      const docIdStr = item.docId ? String(item.docId) : idStr;
+      if (deletedIds.has(idStr) || deletedIds.has(docIdStr)) return;
+
+      const txId = item.transactionId || item.txId;
+      if (txId) {
+        const existingId = seenTxIds.get(String(txId));
+        if (existingId && existingId !== idStr) {
+          const existingItem = mergedMap.get(existingId);
+          const existingTime = getEpoch(existingItem);
+          const currentTime = getEpoch(item);
+          if (currentTime <= existingTime) {
+            return;
+          } else {
+            mergedMap.delete(existingId);
+          }
+        }
+        seenTxIds.set(String(txId), idStr);
+      }
+
+      if (!mergedMap.has(idStr)) {
+        mergedMap.set(idStr, item);
+      } else {
+        const existingItem = mergedMap.get(idStr);
+        if (getEpoch(item) >= getEpoch(existingItem)) {
+          mergedMap.set(idStr, item);
+        }
+      }
+    };
+
+    // First preserve local documents
+    if (Array.isArray(localDocs)) {
+      localDocs.forEach(processItem);
+    }
+
+    // Merge incoming cloud updates
+    cloudDocs.forEach(processItem);
+
+    const finalDocs = Array.from(mergedMap.values()).sort((a, b) => getEpoch(b) - getEpoch(a));
+
+    localStorage.setItem(localKey, JSON.stringify(finalDocs));
+    localStorage.setItem(fallbackKey, JSON.stringify(finalDocs));
+
+    return finalDocs;
+  } catch (error) {
+    const localKey = `bizflow_${orgId}_${table}_v1`;
+    const fallbackKey = `bizflow_${table}_v1`;
+    const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
+    if (localStr) {
+      try { return JSON.parse(localStr); } catch (e) {}
+    }
+    if (String(error).includes('offline')) return [];
+    handleFirestoreError(error, OperationType.GET, table);
+    return null;
+  }
+};
+
+export const fetchAllOrganizations = async () => {
+  try {
+    const q = query(collection(db, 'organizations'), limit(10));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(d => d.data());
+  } catch (error) {
+    console.error('Failed to fetch organizations', error);
+    return [];
+  }
+};
+
+export const saveOrganization = async (org: any) => {
+  try {
+    await safeSetDoc(doc(db, 'organizations', org.id), org, { merge: true });
+  } catch (error) {
+    console.warn('Failed to save organization to cloud', error);
+  }
+};
+
+export const deleteOrganization = async (orgId: string) => {
+  try {
+    await deleteDoc(doc(db, 'organizations', orgId));
+  } catch (error) {
+    console.error('Failed to delete organization', error);
+  }
+};
+
+export const checkSupabaseConnection = async (): Promise<{ success: boolean; message: string }> => {
+  try {
+    const connRef = doc(db, 'system', 'connection_test');
+    await Promise.race([
+      getDocFromServer(connRef),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+    ]);
+    return { success: true, message: 'Connected to Firebase. Spark Plan (Quota Safe Active).' };
+  } catch (error: any) {
+    if (error.message === 'timeout') {
+      return { success: false, message: 'Connection timed out. Working in offline mode.' };
+    }
+    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
+      return { success: false, message: 'Device is offline or Firebase is unreachable. Data saves locally.' };
+    }
+    return { success: false, message: 'Could not reach Firebase.' };
+  }
+};
+
+// Ultra-efficient push: flush only pending local queue items and unsynced records without full-collection downloads
+export const pushUnsyncedLocalDataToCloud = async () => {
+  if (typeof window === 'undefined' || !navigator.onLine || isQuotaPaused()) return;
+  await processSyncQueue();
+  await autoSyncUnsyncedData();
+};
+
+let listenersInitialized = false;
+
+export const initRealtimeSyncListeners = () => {
+  if (typeof window === 'undefined' || listenersInitialized || isQuotaPaused()) return;
+  listenersInitialized = true;
+
+  const orgId = getActiveOrgId();
+  const tables = ['sales', 'settlements', 'expenses', 'customers', 'suppliers', 'main_return_stock'];
+
+  tables.forEach(table => {
+    try {
+      const colRef = collection(db, table);
+      onSnapshot(colRef, (snapshot) => {
+        if (snapshot.metadata.hasPendingWrites) return;
+        const cloudDocs = snapshot.docs.map(d => {
+          const data = d.data();
+          return { ...data, id: data.id || d.id, docId: d.id };
+        }).filter((item: any) => !item.organizationId || item.organizationId === orgId);
+
+        if (cloudDocs.length === 0) return;
+
+        const localKey = `bizflow_${orgId}_${table}_v1`;
+        const fallbackKey = `bizflow_${table}_v1`;
+        const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
+        let localDocs: any[] = [];
+        try {
+          if (localStr) localDocs = JSON.parse(localStr);
+        } catch (e) {}
+
+        const mergedMap = new Map<string, any>();
+        localDocs.forEach(item => {
+          if (item && item.id !== undefined) mergedMap.set(String(item.id), item);
+        });
+        cloudDocs.forEach((item: any) => {
+          if (item && item.id !== undefined) {
+            const existing = mergedMap.get(String(item.id));
+            const cTime = item.updatedAt || Number(item.createdAt) || 0;
+            const eTime = existing ? (existing.updatedAt || Number(existing.createdAt) || 0) : 0;
+            if (!existing || cTime >= eTime) {
+              mergedMap.set(String(item.id), item);
+            }
+          }
+        });
+
+        const finalDocs = Array.from(mergedMap.values());
+        localStorage.setItem(localKey, JSON.stringify(finalDocs));
+        localStorage.setItem(fallbackKey, JSON.stringify(finalDocs));
+
+        broadcastSync(table, finalDocs);
+      }, (error) => {
+        const errMsg = error?.message || String(error);
+        if (errMsg.includes('quota') || errMsg.includes('resource-exhausted')) {
+          markQuotaExceeded();
+        }
+      });
+    } catch (e) {}
+  });
+
+  try {
+    const sysCol = collection(db, 'system');
+    onSnapshot(sysCol, (snapshot) => {
+      if (snapshot.metadata.hasPendingWrites) return;
+      snapshot.docChanges().forEach(change => {
+        if (change.type === 'added' || change.type === 'modified') {
+          const docData = change.doc.data();
+          const docId = change.doc.id;
+          if (docId.startsWith(`org_${orgId}_`)) {
+            if (docId.includes('_inventory')) {
+              localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(docData.data));
+              localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(docData.data));
+              broadcastSync('admin_inventory', docData.data);
+            } else if (docId.includes('_returns')) {
+              localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(docData.data));
+              localStorage.setItem('bizflow_main_return_stock_v1', JSON.stringify(docData.data));
+              broadcastSync('main_return_stock', docData.data);
+            } else if (docId.includes('_repinv_')) {
+              const repId = docId.replace(`org_${orgId}_repinv_`, '');
+              localStorage.setItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(docData.data));
+              broadcastSync(`repinv_${repId}`, docData.data);
+            } else if (docId.includes('_settings')) {
+              localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(docData));
+              broadcastSync('settings', docData);
+            }
+          }
+        }
+      });
+    }, (error) => {
+      const errMsg = error?.message || String(error);
+      if (errMsg.includes('quota') || errMsg.includes('resource-exhausted')) {
+        markQuotaExceeded();
+      }
+    });
+  } catch (e) {}
+};

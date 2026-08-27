@@ -1,0 +1,82 @@
+const fs = require('fs');
+let code = fs.readFileSync('src/pages/AdminDashboard.tsx', 'utf8');
+
+const target = `{/* Hidden thermal print area (Admin) */}
+      <div 
+        id="thermal-print-area" 
+        style={printImageSrc ? {
+          position: 'fixed',
+          left: '0',
+          top: '0',
+          width: '58mm',
+          background: 'white',
+          zIndex: 9999
+        } : {
+          position: 'fixed',
+          left: '-9999px',
+          top: '0',
+          width: '58mm',
+          background: 'white',
+          zIndex: -9999
+        }}
+      >
+        {printImageSrc ? (
+          <img src={printImageSrc} style={{ width: '58mm', display: 'block', margin: '0 auto' }} referrerPolicy="no-referrer" />
+        ) : (
+          printData && Array.from({ length: requestedCopies || 1 }).map((_, idx) => {
+            const copyNum = idx + 1;
+            return (
+              <div key={\`admin-print-\${copyNum}\`} style={{ marginBottom: idx < (requestedCopies - 1) ? '30px' : '0' }}>
+                <BillPrintLayout previewSale={printData} orgSettings={orgSettings} />
+                {idx < (requestedCopies - 1) ? (
+                  <div style={{ textAlign: 'center', fontSize: '12px', fontWeight: 'bold', borderTop: '2px dashed black', borderBottom: '2px dashed black', padding: '15px 0', margin: '20px 0', width: '58mm' }}>- - - - - CUT - - - - -</div>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+      </div>`;
+
+const replacement = `{/* Hidden thermal print area (Admin) */}
+      {createPortal(
+      <div 
+        id="thermal-print-area" 
+        className="print-only"
+        style={printImageSrc ? {
+          position: 'fixed',
+          left: '0',
+          top: '0',
+          width: '100%',
+          maxWidth: '58mm',
+          background: 'white',
+          zIndex: 9999
+        } : {
+          position: 'fixed',
+          left: '-9999px',
+          top: '0',
+          width: '58mm',
+          background: 'white',
+          zIndex: -9999
+        }}
+      >
+        {printImageSrc ? (
+          <img src={printImageSrc} style={{ width: '58mm', display: 'block', margin: '0 auto' }} referrerPolicy="no-referrer" />
+        ) : (
+          printData && Array.from({ length: requestedCopies || 1 }).map((_, idx) => {
+            const copyNum = idx + 1;
+            return (
+              <div key={\`admin-print-\${copyNum}\`} style={{ marginBottom: idx < (requestedCopies - 1) ? '30px' : '0' }}>
+                <BillPrintLayout previewSale={printData} orgSettings={orgSettings} />
+                {idx < (requestedCopies - 1) ? (
+                  <div style={{ textAlign: 'center', fontSize: '12px', fontWeight: 'bold', borderTop: '2px dashed black', borderBottom: '2px dashed black', padding: '15px 0', margin: '20px 0', width: '58mm' }}>- - - - - CUT - - - - -</div>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+      , document.body)}`;
+
+code = code.replace(target, replacement);
+
+fs.writeFileSync('src/pages/AdminDashboard.tsx', code);

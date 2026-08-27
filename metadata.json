@@ -1,0 +1,11 @@
+{
+  "name": "MYM BIZFLOW",
+  "description": "Supply & Distribution Management System with Admin and Sales Rep portals.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone",
+    "camera",
+    "bluetooth"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,41 @@
+906-          name: customer.trim(),
+907-          location: address.trim(),
+908-          locationStr: locationStr,
+909-          balance: totalDue,
+910-          createdAt: new Date().toISOString()
+911-        };
+912-        const newCusts = [...customers, newCust];
+913-        setCustomers(newCusts);
+914-        localStorage.setItem('bizflow_customers_v1', JSON.stringify(newCusts));
+915-        addToSyncQueue({ table: 'customers', action: 'insert', data: newCust });
+916-      }
+917-
+918-      // Save offline sync transaction (fake 'sales' table)
+919-      addToSyncQueue({
+920-          table: 'sales',
+921-          action: 'insert',
+922-          data: saleObj
+923-        });
+924-      setSalesHistory((prev: any) => [saleObj, ...prev]);
+925-      
+926-    } else {
+927-        // Credit receive logic sync
+928-        const amount = parseFloat(creditReceivedAmount || '0');
+929-        const targetCust = customers.find(c => (c.name || '').toLowerCase() === (customer || '').toLowerCase());
+930-        if (targetCust && amount > 0) {
+931-          const updatedCust = { ...targetCust, balance: Math.max(0, (targetCust.balance || 0) - amount) };
+932-          const newCusts = customers.map(c => c.id === targetCust.id ? updatedCust : c);
+933-          setCustomers(newCusts);
+934-          localStorage.setItem('bizflow_customers_v1', JSON.stringify(newCusts));
+935-          addToSyncQueue({ table: 'customers', action: 'update', data: updatedCust });
+936-        }
+937-
+938-        addToSyncQueue({
+939-             table: 'sales',
+940-             action: 'insert',
+941-             data: saleObj
+942-           });
+943-        setSalesHistory((prev: any) => [saleObj, ...prev]);
+944-    }
+945-
+946:    setPrintDataProp(saleObj);
