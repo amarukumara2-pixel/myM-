@@ -384,7 +384,7 @@ export default function RepDashboard() {
 
     if (isAlreadyCancelled) {
       const confirmMsg = lang === 'si'
-        ? `මෙම අවලංගු කළ බිල්පත (ID: ${sale.id || 'N/A'}) පද්ධතියෙන් සහ ඉතිහාසයෙන් මුළුමනින්ම මකා දැමීමට (Delete) අවශ්‍යද?`
+        ? `මෙම අවලංග��� කළ බිල්පත (ID: ${sale.id || 'N/A'}) පද්ධතියෙන් සහ ඉතිහාසයෙන් මුළුමනින්ම මකා දැමීමට (Delete) අවශ්‍යද?`
         : `Do you want to permanently delete bill ${sale.id || 'N/A'} from history?`;
 
       if (!window.confirm(confirmMsg)) return;
@@ -4137,7 +4137,9 @@ function SettlementTab({ t, currentRep, inventory, setInventory, salesData, lang
         expensesDeduction: expAmt + ruwanExpAmt + sankaExpAmt,
         advancesDeduction: myAdv + otherAdv,
         netCashHandedOver: netCash,
-        salesCount: todaySales.length
+        salesCount: todaySales.length,
+        grossProfit: todayGrossProfit,
+        netProfit: todayNetProfit
       });
     }
     if (myAdv > 0) msgs.push(`My advance (Rs ${myAdv}) recorded.`);

@@ -479,50 +479,34 @@ export default function App() {
       });
     });
 
+    let lastReconnectSync = 0;
+    let reconnectSyncInFlight = false;
     const triggerSyncQueue = async () => {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
-        try {
-          const [{ processSyncQueue, isQuotaPaused }, { syncAllFromCloud }] = await Promise.all([
-            import('./lib/sync'),
-            import('./lib/store')
-          ]);
-          if (isQuotaPaused()) return;
-          console.log('Connectivity triggered. Processing sync queue & pulling cloud data...');
+      if (typeof navigator === 'undefined' || !navigator.onLine || reconnectSyncInFlight) return;
+      const now = Date.now();
+      if (now - lastReconnectSync < 30000) return;
+      lastReconnectSync = now;
+      reconnectSyncInFlight = true;
+      try {
+        const [{ processSyncQueue, isQuotaPaused }, { syncAllFromCloud }] = await Promise.all([
+          import('./lib/sync'),
+          import('./lib/store')
+        ]);
+        if (!isQuotaPaused()) {
           await processSyncQueue();
           await syncAllFromCloud();
-        } catch (err) {
-          console.warn('Auto sync execution error:', err);
         }
+      } catch (err) {
+        console.warn('Reconnect sync notice:', err);
+      } finally {
+        reconnectSyncInFlight = false;
       }
     };
-    
+
+    // Reconnect is the only automatic network trigger. Focus, visibility and
+    // periodic polling caused unnecessary reads whenever the phone woke up.
     window.addEventListener('online', triggerSyncQueue);
-    window.addEventListener('focus', triggerSyncQueue);
-    
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        triggerSyncQueue();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    // Periodic background sync check every 60 seconds
-    const intervalId = setInterval(triggerSyncQueue, 60000);
-    
-    // Initial check & immediate cloud pull
-    import('./lib/sync').then(({ processSyncQueue }) => {
-      processSyncQueue();
-    });
-    import('./lib/store').then(({ syncAllFromCloud }) => {
-      syncAllFromCloud();
-    });
-    
-    return () => {
-      window.removeEventListener('online', triggerSyncQueue);
-      window.removeEventListener('focus', triggerSyncQueue);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      clearInterval(intervalId);
-    };
+    return () => window.removeEventListener('online', triggerSyncQueue);
   }, []);
 
   return (

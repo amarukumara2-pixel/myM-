@@ -19,6 +19,18 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
+const env = import.meta.env;
+const configuredFirebase = {
+  apiKey: env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  projectId: env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+  appId: env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || firebaseConfig.measurementId,
+};
+const firestoreDatabaseId = env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+
 // Silence background transport connectivity warnings in console
 if (typeof window !== 'undefined') {
   try {
@@ -26,32 +38,20 @@ if (typeof window !== 'undefined') {
   } catch (e) {}
 }
 
-// Clean up any bloated legacy IndexedDB databases created by Firebase (prevents 17MB-18MB freeze)
-if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
-  try {
-    if (window.indexedDB.databases) {
-      window.indexedDB.databases().then((dbs) => {
-        dbs.forEach((dbInfo) => {
-          if (dbInfo.name && (dbInfo.name.startsWith('firestore') || dbInfo.name.startsWith('firebase'))) {
-            try {
-              window.indexedDB.deleteDatabase(dbInfo.name);
-            } catch (err) {}
-          }
-        });
-      }).catch(() => {});
-    }
-  } catch (e) {}
-}
+// Keep Firestore's cache intact between page loads. Deleting IndexedDB on startup
+// caused the app to lose pending/offline data and repeatedly rebuild the cache.
+// The Firestore client uses an in-memory cache below, while BizFlow's durable
+// pending queue remains in localStorage until the next successful sync.
 
-// Firebase Initialization with ultra-lightweight in-memory cache (immune to 17MB IndexedDB bloat & freezing)
-export const app = initializeApp(firebaseConfig);
+// Firebase Initialization with lightweight in-memory cache
+export const app = initializeApp(configuredFirebase);
 export const db = initializeFirestore(
   app,
   {
     experimentalAutoDetectLongPolling: true,
     localCache: memoryLocalCache(),
   },
-  firebaseConfig.firestoreDatabaseId
+  firestoreDatabaseId
 );
 
 // Manage network state - allow Firestore persistent cache and auto-recovery
@@ -402,73 +402,47 @@ export const addToSyncQueue = async (payload: Omit<SyncPayload, 'id' | 'timestam
 };
 
 export const processSyncQueue = async () => {
-  if (typeof window === 'undefined' || !navigator.onLine) return;
-  if (isQuotaPaused()) {
-    return;
-  }
+  if (typeof window === 'undefined' || !navigator.onLine || isQuotaPaused()) return;
   const queue = getSyncQueue();
   if (queue.length === 0) return;
 
   const remaining: SyncPayload[] = [];
-  let quotaExceeded = false;
-  const processedInRun = new Set<string>();
-
-  for (const item of queue) {
+  const pending = queue.filter(item => {
     const txId = item.transactionId || item.data?.transactionId || item.data?.txId || `${item.table}_${item.id}_${item.action}`;
-    
-    // Skip duplicate transaction without re-adding to remaining if processed
-    if (isTxProcessed(txId) || processedInRun.has(txId)) {
-      continue;
-    }
+    return !isTxProcessed(txId);
+  }).slice(0, 450);
+  if (pending.length === 0) { saveSyncQueue([]); return; }
 
-    if (quotaExceeded || isQuotaPaused()) {
-      remaining.push(item);
-      continue;
-    }
+  try {
+    const batch = writeBatch(db);
     const orgId = getActiveOrgId();
-    try {
+    const cleanData = (obj: any): any => {
+      if (!obj || typeof obj !== 'object') return obj;
+      const next: any = Array.isArray(obj) ? [] : {};
+      Object.keys(obj).forEach(key => { if (obj[key] !== undefined) next[key] = cleanData(obj[key]); });
+      return next;
+    };
+    pending.forEach(item => {
+      const txId = item.transactionId || item.data?.transactionId || item.data?.txId || `${item.table}_${item.id}_${item.action}`;
       const ref = doc(db, item.table, item.id);
-      if (item.action === 'delete') {
-        await deleteDoc(ref).catch(() => {});
-        if (item.data?.docId && String(item.data.docId) !== item.id) {
-          await deleteDoc(doc(db, item.table, String(item.data.docId))).catch(() => {});
-        }
-        markTxProcessed(txId);
-        processedInRun.add(txId);
-      } else {
-        const cleanData = (obj: any): any => {
-          if (!obj || typeof obj !== 'object') return obj;
-          const newObj: any = Array.isArray(obj) ? [] : {};
-          Object.keys(obj).forEach(key => {
-            const val = obj[key];
-            if (val !== undefined) {
-              newObj[key] = (val && typeof val === 'object') ? cleanData(val) : val;
-            }
-          });
-          return newObj;
-        };
-        const itemData = cleanData({ ...item.data, transactionId: txId, organizationId: orgId, updatedAt: Date.now() });
-        await setDoc(ref, itemData, { merge: true });
-        markTxProcessed(txId);
-        markRecordSynced(item.table, item.id, itemData);
-        processedInRun.add(txId);
-        broadcastSync(item.table, itemData);
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: item.table, data: itemData } }));
-        }
+      if (item.action === 'delete') batch.delete(ref);
+      else batch.set(ref, cleanData({ ...item.data, transactionId: txId, organizationId: orgId, updatedAt: Date.now() }), { merge: true });
+    });
+    await batch.commit();
+    pending.forEach(item => {
+      const txId = item.transactionId || item.data?.transactionId || item.data?.txId || `${item.table}_${item.id}_${item.action}`;
+      markTxProcessed(txId);
+      if (item.action !== 'delete') {
+        markRecordSynced(item.table, item.id, item.data);
+        broadcastSync(item.table, item.data);
       }
-    } catch (err: any) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes('resource-exhausted') || errMsg.includes('quota') || errMsg.includes('Quota limit exceeded')) {
-        quotaExceeded = true;
-        markQuotaExceeded();
-        console.warn('Firestore daily write quota reached. Pausing background sync queue until reset.');
-      }
-      remaining.push(item);
-    }
+    });
+    saveSyncQueue(queue.filter(item => !pending.includes(item)));
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('resource-exhausted') || message.includes('quota')) markQuotaExceeded();
+    saveSyncQueue(queue);
   }
-
-  saveSyncQueue(remaining);
 };
 
 let autoSyncDebounceTimer: any = null;
