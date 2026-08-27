@@ -19,6 +19,18 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
+const env = import.meta.env;
+const configuredFirebase = {
+  apiKey: env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  projectId: env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+  appId: env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || firebaseConfig.measurementId,
+};
+const firestoreDatabaseId = env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+
 // Silence background transport connectivity warnings in console
 if (typeof window !== 'undefined') {
   try {
@@ -44,14 +56,14 @@ if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
 }
 
 // Firebase Initialization with ultra-lightweight in-memory cache (immune to 17MB IndexedDB bloat & freezing)
-export const app = initializeApp(firebaseConfig);
+export const app = initializeApp(configuredFirebase);
 export const db = initializeFirestore(
   app,
   {
     experimentalAutoDetectLongPolling: true,
     localCache: memoryLocalCache(),
   },
-  firebaseConfig.firestoreDatabaseId
+  firestoreDatabaseId
 );
 
 // Manage network state - allow Firestore persistent cache and auto-recovery
