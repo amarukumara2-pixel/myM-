@@ -38,24 +38,12 @@ if (typeof window !== 'undefined') {
   } catch (e) {}
 }
 
-// Clean up any bloated legacy IndexedDB databases created by Firebase (prevents 17MB-18MB freeze)
-if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
-  try {
-    if (window.indexedDB.databases) {
-      window.indexedDB.databases().then((dbs) => {
-        dbs.forEach((dbInfo) => {
-          if (dbInfo.name && (dbInfo.name.startsWith('firestore') || dbInfo.name.startsWith('firebase'))) {
-            try {
-              window.indexedDB.deleteDatabase(dbInfo.name);
-            } catch (err) {}
-          }
-        });
-      }).catch(() => {});
-    }
-  } catch (e) {}
-}
+// Keep Firestore's cache intact between page loads. Deleting IndexedDB on startup
+// caused the app to lose pending/offline data and repeatedly rebuild the cache.
+// The Firestore client uses an in-memory cache below, while BizFlow's durable
+// pending queue remains in localStorage until the next successful sync.
 
-// Firebase Initialization with ultra-lightweight in-memory cache (immune to 17MB IndexedDB bloat & freezing)
+// Firebase Initialization with lightweight in-memory cache
 export const app = initializeApp(configuredFirebase);
 export const db = initializeFirestore(
   app,

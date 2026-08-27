@@ -382,6 +382,8 @@ export interface SettlementRecord {
   advancesDeduction?: number;
   netCashHandedOver?: number;
   salesCount?: number;
+  grossProfit?: number;
+  netProfit?: number;
   status: 'Settled';
   submittedOnline: boolean;
   organizationId: string;
@@ -425,7 +427,9 @@ export const markDatesSettled = (repId: string, dates: string[], details?: {
   advancesDeduction?: number;
   netCashHandedOver?: number;
   salesCount?: number;
-}) => {
+  grossProfit?: number;
+  netProfit?: number;
+  }) => {
   if (!repId) return;
   const orgId = getActiveOrgId();
   const existingRecords = getSettlementRecords();
@@ -442,8 +446,10 @@ export const markDatesSettled = (repId: string, dates: string[], details?: {
     expensesDeduction: details?.expensesDeduction || 0,
     advancesDeduction: details?.advancesDeduction || 0,
     netCashHandedOver: details?.netCashHandedOver !== undefined ? details.netCashHandedOver : (details?.totalCash || 0),
-    salesCount: details?.salesCount || 0,
-    status: 'Settled',
+  salesCount: details?.salesCount || 0,
+  grossProfit: details?.grossProfit || 0,
+  netProfit: details?.netProfit || 0,
+  status: 'Settled',
     submittedOnline: navigator.onLine,
     organizationId: orgId
   }));
