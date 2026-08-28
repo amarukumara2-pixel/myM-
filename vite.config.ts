@@ -46,6 +46,8 @@ export default defineConfig(({mode}) => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
           maximumFileSizeToCacheInBytes: 5000000,
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
         },
         manifest: {
           name: 'MYM Bizflow',

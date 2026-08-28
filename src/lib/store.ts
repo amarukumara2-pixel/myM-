@@ -1,3 +1,39 @@
+export const safeSetItem = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e: any) {
+    if (e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 || (e.message && e.message.toLowerCase().includes('quota')))) {
+      console.warn('LocalStorage quota exceeded, cleaning up old keys and large items...');
+      try {
+        // First pass: remove logs, signals, temp, cache
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && (k.includes('network_logs') || k.includes('sync_queue') || k.includes('old_') || k.includes('temp_') || k.includes('signal') || k.includes('log'))) {
+            localStorage.removeItem(k);
+          }
+        }
+        try {
+          localStorage.setItem(key, value);
+          return;
+        } catch (innerErr) {
+          // Second pass: remove older sales/inventory backups if still exceeding
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && k !== key && !k.includes('users_v2')) {
+              localStorage.removeItem(k);
+            }
+          }
+          localStorage.setItem(key, value);
+        }
+      } catch (retryErr) {
+        console.error('Failed to setItem even after aggressive quota cleanup:', retryErr);
+      }
+    } else {
+      console.error('LocalStorage setItem error:', e);
+    }
+  }
+};
+
 export function getActiveOrgId(): string {
   return 'MYM-BIZFLOW';
 };
@@ -32,7 +68,7 @@ export const getOrganizationSettings = (): OrganizationSettings => {
       // Ensure createdAt exists for old orgs (mocking 3 months ago if missing so feature works for current users if they want)
       if (!parsed.createdAt) {
           parsed.createdAt = Date.now() - (90 * 24 * 60 * 60 * 1000); 
-          localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(parsed));
+          safeSetItem(`bizflow_${orgId}_settings`, JSON.stringify(parsed));
       }
       return parsed;
     }
@@ -42,7 +78,7 @@ export const getOrganizationSettings = (): OrganizationSettings => {
 
 export const saveOrganizationSettings = (settings: OrganizationSettings) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(settings));
+  safeSetItem(`bizflow_${orgId}_settings`, JSON.stringify(settings));
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc} ]) => {
     safeSetDoc(doc(db, 'system', `org_${orgId}_settings`), { 
       ...settings,
@@ -78,8 +114,50 @@ export interface SystemUser {
   lastOnline?: number;
 }
 
+export const purgeNimalKamal = () => {
+  const orgId = getActiveOrgId();
+  const userKeys = [`bizflow_${orgId}_users_v2`, 'bizflow_MYM-BIZFLOW_users_v2', 'bizflow_default_users_v2', 'bizflow_users_v2'];
+  userKeys.forEach(key => {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((u: SystemUser) => {
+            const name = (u.name || '').trim().toLowerCase();
+            return name !== 'nimal' && name !== 'kamal' && !name.includes('nimal') && !name.includes('kamal');
+          });
+          if (filtered.length !== parsed.length) {
+            safeSetItem(key, JSON.stringify(filtered));
+          }
+        }
+      }
+    } catch (e) {}
+  });
+
+  const salesKeys = [`bizflow_${orgId}_sales_v1`, `bizflow_MYM-BIZFLOW_sales_v1`, 'bizflow_sales_v1'];
+  salesKeys.forEach(key => {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((s: any) => {
+            const repName = (s.rep || s.repName || s.salesPerson || '').trim().toLowerCase();
+            return repName !== 'nimal' && repName !== 'kamal' && !repName.includes('nimal') && !repName.includes('kamal');
+          });
+          if (filtered.length !== parsed.length) {
+            safeSetItem(key, JSON.stringify(filtered));
+          }
+        }
+      }
+    } catch (e) {}
+  });
+};
+
 export const getUsers = (): SystemUser[] => {
   const orgId = getActiveOrgId();
+  purgeNimalKamal();
   try {
     const stored = localStorage.getItem(`bizflow_${orgId}_users_v2`) || 
                    localStorage.getItem(`bizflow_MYM-BIZFLOW_users_v2`) || 
@@ -88,7 +166,11 @@ export const getUsers = (): SystemUser[] => {
     if (stored) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        const filtered = parsed.filter((u: SystemUser) => {
+          const name = (u.name || '').trim().toLowerCase();
+          return name !== 'nimal' && name !== 'kamal' && !name.includes('nimal') && !name.includes('kamal');
+        });
+        return filtered;
       }
     }
   } catch (e) {}
@@ -101,7 +183,7 @@ export const getUsers = (): SystemUser[] => {
     role: 'admin',
     organizationId: orgId 
   }];
-  localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(defaults));
+  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(defaults));
   return defaults;
 };
 
@@ -109,7 +191,7 @@ export const getUsers = (): SystemUser[] => {
 export const deleteSystemUser = (userId: string) => {
   const orgId = getActiveOrgId();
   const currentUsers = getUsers().filter(u => u.id !== userId);
-  localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(currentUsers));
+  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(currentUsers));
   
   Promise.all([import('firebase/firestore'), import('./sync')]).then(async ([ {doc}, {db, safeSetDoc, safeDeleteDoc} ]) => {
     const sanitize = (obj: any): any => JSON.parse(JSON.stringify(obj));
@@ -129,7 +211,7 @@ export const deleteSystemUser = (userId: string) => {
 export const saveUsers = (users: SystemUser[]) => {
   const orgId = getActiveOrgId();
   const cleanUsers = users;
-  localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(cleanUsers));
+  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(cleanUsers));
   
   // Also push to standard 'users' collection for multi-device reliability
   Promise.all([import('firebase/firestore'), import('./sync')]).then(async ([ {doc}, {db, safeSetDoc} ]) => {
@@ -162,7 +244,7 @@ export const updateUserOnlineStatus = (userId: string) => {
     // Always update local storage for fast UI feedback
     users[idx].lastOnline = now;
     const orgId = getActiveOrgId();
-    localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(users));
+    safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(users));
 
     // Throttle cloud write to once every 15 minutes to preserve Firestore quota
     if (!last || now - last > 15 * 60 * 1000) {
@@ -249,7 +331,7 @@ export const getRepInventory = (repId: string): RepInventoryItem[] => {
 
 export const saveRepInventory = (repId: string, inv: RepInventoryItem[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(inv));
+  safeSetItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(inv));
   
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: `repinv_${repId}`, data: inv } }));
@@ -327,7 +409,7 @@ export const getAttendanceRecords = (): AttendanceRecord[] => {
 
 export const saveAttendanceRecords = (records: AttendanceRecord[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(records));
+  safeSetItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(records));
   
   const existingStaffStr = localStorage.getItem(`bizflow_${orgId}_staff_attendance_v1`);
   let staffList: StaffAttendance[] = existingStaffStr ? JSON.parse(existingStaffStr) : [];
@@ -350,7 +432,7 @@ export const saveAttendanceRecords = (records: AttendanceRecord[]) => {
   });
   
   const newStaffList = Array.from(staffMap.values());
-  localStorage.setItem(`bizflow_${orgId}_staff_attendance_v1`, JSON.stringify(newStaffList));
+  safeSetItem(`bizflow_${orgId}_staff_attendance_v1`, JSON.stringify(newStaffList));
   
   const staffListForCloud = newStaffList; // rename to match downstream usage
 
@@ -464,7 +546,7 @@ export const markDatesSettled = (repId: string, dates: string[], details?: {
     }
   });
 
-  localStorage.setItem(`bizflow_${orgId}_settlements_v1`, JSON.stringify(updatedRecords));
+  safeSetItem(`bizflow_${orgId}_settlements_v1`, JSON.stringify(updatedRecords));
 
   const key = `bizflow_${orgId}_${repId}_settled_dates`;
   let existingDates: string[] = [];
@@ -473,7 +555,7 @@ export const markDatesSettled = (repId: string, dates: string[], details?: {
     existingDates = raw ? JSON.parse(raw) : [];
   } catch {}
   const updatedDates = Array.from(new Set([...existingDates, ...dates]));
-  localStorage.setItem(key, JSON.stringify(updatedDates));
+  safeSetItem(key, JSON.stringify(updatedDates));
 
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc, addToSyncQueue} ]) => {
     safeSetDoc(doc(db, 'system', `org_${orgId}_settlements`), { 
@@ -608,7 +690,7 @@ export const getStaffAttendance = (): StaffAttendance[] => {
 
 export const saveStaffAttendance = (records: StaffAttendance[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_staff_attendance_v1`, JSON.stringify(records));
+  safeSetItem(`bizflow_${orgId}_staff_attendance_v1`, JSON.stringify(records));
   
   const attList: AttendanceRecord[] = records.map(s => ({
     id: s.id,
@@ -621,7 +703,7 @@ export const saveStaffAttendance = (records: StaffAttendance[]) => {
     otHours: s.otHours || 0,
     isEndDay: !!s.checkOut
   }));
-  localStorage.setItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(attList));
+  safeSetItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(attList));
 
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc} ]) => {
     safeSetDoc(doc(db, 'system', `org_${orgId}_staff_attendance`), { 
@@ -667,7 +749,7 @@ export const getAIActionRequests = (): AIActionRequest[] => {
 
 export const saveAIActionRequests = (requests: AIActionRequest[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(requests));
+  safeSetItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(requests));
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc} ]) => {
     safeSetDoc(doc(db, 'system', `org_${orgId}_aiactions`), { 
       data: requests,
@@ -696,9 +778,9 @@ export const getAdminInventory = (): any[] => {
 
 export const saveAdminInventory = (inventory: any[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(inventory));
-  localStorage.setItem(`bizflow_MYM-BIZFLOW_admin_inventory_v1`, JSON.stringify(inventory));
-  localStorage.setItem(`bizflow_admin_inventory_v1`, JSON.stringify(inventory));
+  safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(inventory));
+  safeSetItem(`bizflow_MYM-BIZFLOW_admin_inventory_v1`, JSON.stringify(inventory));
+  safeSetItem(`bizflow_admin_inventory_v1`, JSON.stringify(inventory));
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc} ]) => {
     safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), { 
       data: inventory,
@@ -725,8 +807,8 @@ export const getMainReturnStock = (): any[] => {
 
 export const saveMainReturnStock = (stock: any[]) => {
   const orgId = getActiveOrgId();
-  localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(stock));
-  localStorage.setItem(`bizflow_main_return_stock_v1`, JSON.stringify(stock));
+  safeSetItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(stock));
+  safeSetItem(`bizflow_main_return_stock_v1`, JSON.stringify(stock));
   Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc} ]) => {
     // Legacy sync
     safeSetDoc(doc(db, 'system', `org_${orgId}_returns`), { 
@@ -752,7 +834,7 @@ export const syncRequestsFromCloud = async () => {
     const [{ db }, { doc, getDoc }] = await Promise.all([import('./sync'), import('firebase/firestore')]);
     const aiDoc = await getDoc(doc(db, 'system', `org_${orgId}_aiactions`));
     if (aiDoc.exists() && aiDoc.data().data) {
-      localStorage.setItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(aiDoc.data().data));
+      safeSetItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(aiDoc.data().data));
       return aiDoc.data().data;
     }
   } catch (e) {
@@ -782,9 +864,9 @@ export const syncAllFromCloud = async () => {
       if (uDoc.exists() && uDoc.data()?.data) {
         const arr = uDoc.data().data;
         if (Array.isArray(arr) && arr.length > 0) {
-          localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(arr));
-          localStorage.setItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(arr));
-          localStorage.setItem(`bizflow_users_v2`, JSON.stringify(arr));
+          safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(arr));
+          safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(arr));
+          safeSetItem(`bizflow_users_v2`, JSON.stringify(arr));
         }
       }
     } catch (e) {}
@@ -793,7 +875,7 @@ export const syncAllFromCloud = async () => {
     try {
       const attendanceDoc = await getDoc(doc(db, 'system', `org_${orgId}_attendance`));
       if (attendanceDoc.exists() && attendanceDoc.data()?.data) {
-        localStorage.setItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(attendanceDoc.data().data));
+        safeSetItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(attendanceDoc.data().data));
       }
     } catch (e) {}
 
@@ -801,7 +883,7 @@ export const syncAllFromCloud = async () => {
     try {
       const aiDoc = await getDoc(doc(db, 'system', `org_${orgId}_aiactions`));
       if (aiDoc.exists() && aiDoc.data()?.data) {
-        localStorage.setItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(aiDoc.data().data));
+        safeSetItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(aiDoc.data().data));
       }
     } catch (e) {}
 
@@ -809,7 +891,7 @@ export const syncAllFromCloud = async () => {
     try {
       const settingsDoc = await getDoc(doc(db, 'system', `org_${orgId}_settings`));
       if (settingsDoc.exists()) {
-        localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(settingsDoc.data()));
+        safeSetItem(`bizflow_${orgId}_settings`, JSON.stringify(settingsDoc.data()));
       }
     } catch (e) {}
     
@@ -817,8 +899,8 @@ export const syncAllFromCloud = async () => {
     try {
       const invDoc = await getDoc(doc(db, 'system', `org_${orgId}_inventory`));
       if (invDoc.exists() && invDoc.data()?.data && Array.isArray(invDoc.data().data)) {
-        localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(invDoc.data().data));
-        localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(invDoc.data().data));
+        safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(invDoc.data().data));
+        safeSetItem('bizflow_admin_inventory_v1', JSON.stringify(invDoc.data().data));
       }
     } catch (e) {}
 
@@ -826,8 +908,8 @@ export const syncAllFromCloud = async () => {
     try {
       const retDoc = await getDoc(doc(db, 'system', `org_${orgId}_returns`));
       if (retDoc.exists() && retDoc.data()?.data) {
-        localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(retDoc.data().data));
-        localStorage.setItem('bizflow_main_return_stock_v1', JSON.stringify(retDoc.data().data));
+        safeSetItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(retDoc.data().data));
+        safeSetItem('bizflow_main_return_stock_v1', JSON.stringify(retDoc.data().data));
       }
     } catch (e) {}
 
@@ -863,7 +945,7 @@ export const syncRepFromCloud = async (repId: string) => {
     if (isQuotaPaused()) return;
     const repInvDoc = await getDoc(doc(db, 'system', `org_${orgId}_repinv_${repId}`));
     if (repInvDoc.exists() && repInvDoc.data()?.data) {
-      localStorage.setItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(repInvDoc.data().data));
+      safeSetItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(repInvDoc.data().data));
     }
   } catch (e) {
     console.warn('Sync rep data notice:', e);
@@ -871,299 +953,13 @@ export const syncRepFromCloud = async (repId: string) => {
 };
 
 export const listenToCloudChanges = async (callback: (table: string, data: any) => void) => {
-  const orgId = getActiveOrgId();
-  const [{ db, getSyncQueue, isQuotaPaused, markQuotaExceeded }, { doc, onSnapshot, collection, query, where }] = await Promise.all([import('./sync'), import('firebase/firestore')]);
-  if (isQuotaPaused()) return () => {};
-  
-  const repInvUnsubs = new Map<string, () => void>();
-
-  // Listen to common tables
-  const unsubs = [
-    onSnapshot(query(collection(db, 'users')), (snapshot) => {
-      const dbUsers: any[] = [];
-      snapshot.forEach(d => dbUsers.push({ ...d.data(), id: d.data().id || d.id, docId: d.id }));
-      const filteredDbUsers = dbUsers.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      // Merge with existing local storage to prevent wiping out legacy un-migrated users
-      const localUsersStr = localStorage.getItem(`bizflow_${orgId}_users_v2`);
-      let localUsers: any[] = [];
-      try { if (localUsersStr) localUsers = JSON.parse(localUsersStr); } catch(e) {}
-      
-      const mergedMap = new Map<string, any>();
-      localUsers.forEach(u => { if (u && u.id) mergedMap.set(String(u.id), u); });
-      
-      // Handle explicit deletions from other devices
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'removed') {
-          mergedMap.delete(String(change.doc.id));
-        }
-      });
-
-      filteredDbUsers.forEach(u => { if (u && u.id) mergedMap.set(String(u.id), u); });
-      
-      const finalUsers = Array.from(mergedMap.values());
-      localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(finalUsers));
-      
-      // Attach real-time cloud listeners for all reps' loaded stock / inventory
-      finalUsers.forEach((u: any) => {
-        if (u && u.id && !repInvUnsubs.has(u.id)) {
-          const unsubRep = onSnapshot(doc(db, 'system', `org_${orgId}_repinv_${u.id}`), (snap) => {
-            if (snap.exists() && snap.data().data) {
-              const invData = snap.data().data;
-              localStorage.setItem(`bizflow_${orgId}_repinv_${u.id}`, JSON.stringify(invData));
-              callback(`repinv_${u.id}`, invData);
-              callback('repinv', { repId: u.id, data: invData });
-            }
-          }, () => {});
-          repInvUnsubs.set(u.id, unsubRep);
-        }
-      });
-
-      callback('users', finalUsers);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for users. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'suppliers')), (snapshot) => {
-      const dbSups: any[] = [];
-      snapshot.forEach(d => dbSups.push({ ...d.data(), id: d.data().id || d.id, docId: d.id }));
-      const filteredDbSups = dbSups.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      
-      const localSupsStr = localStorage.getItem(`bizflow_${orgId}_suppliers_v1`) || localStorage.getItem('bizflow_suppliers_v1');
-      let localSups: any[] = [];
-      try { if (localSupsStr) localSups = JSON.parse(localSupsStr); } catch(e) {}
-      
-      const mergedMap = new Map<string, any>();
-      localSups.forEach(s => { if (s && s.id) mergedMap.set(String(s.id), s); });
-      
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'removed') {
-          mergedMap.delete(String(change.doc.id));
-        }
-      });
-      
-      filteredDbSups.forEach(s => { if (s && s.id) mergedMap.set(String(s.id), s); });
-      
-      const finalSups = Array.from(mergedMap.values());
-      localStorage.setItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(finalSups));
-      localStorage.setItem(`bizflow_suppliers_v1`, JSON.stringify(finalSups));
-      callback('suppliers', finalSups);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for suppliers. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'sales')), (snapshot) => {
-      const dbSales: any[] = [];
-      snapshot.forEach(d => {
-        const data = d.data();
-        const id = data.id || d.id;
-        dbSales.push({ ...data, id, docId: d.id });
-      });
-      const filteredDbSales = dbSales.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      
-      const localSalesStr = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
-      let localSales: any[] = [];
-      try { if (localSalesStr) localSales = JSON.parse(localSalesStr); } catch(e) {}
-      
-      const syncQueue = typeof getSyncQueue === 'function' ? getSyncQueue() : [];
-      const deletedIds = new Set(
-        syncQueue
-          .filter(q => q.table === 'sales' && q.action === 'delete')
-          .map(q => String(q.id))
-      );
-
-      const mergedMap = new Map<string, any>();
-      
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'removed') {
-          mergedMap.delete(String(change.doc.id));
-        }
-      });
-
-      const getEpoch = (s: any) => {
-        if (!s) return 0;
-        if (s.updatedAt) return Number(s.updatedAt);
-        if (s.createdAt) return new Date(s.createdAt).getTime();
-        if (s.date) return new Date(s.date).getTime();
-        if (s.timestamp) return Number(s.timestamp);
-        return 0;
-      };
-
-      const processItem = (s: any) => {
-        if (!s || !s.id) return;
-        const sId = String(s.id);
-        const sDocId = s.docId ? String(s.docId) : sId;
-        if (deletedIds.has(sId) || deletedIds.has(sDocId)) return;
-
-        if (!mergedMap.has(sId)) {
-          mergedMap.set(sId, s);
-        } else {
-          const existing = mergedMap.get(sId);
-          if (getEpoch(s) >= getEpoch(existing)) {
-            mergedMap.set(sId, s);
-          }
-        }
-      };
-
-      filteredDbSales.forEach(processItem);
-      localSales.forEach(processItem);
-      
-      const finalSales = Array.from(mergedMap.values()).sort((a, b) => getEpoch(b) - getEpoch(a));
-      localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(finalSales));
-      localStorage.setItem(`bizflow_sales_v1`, JSON.stringify(finalSales));
-      callback('sales', finalSales);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for sales. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'customers')), (snapshot) => {
-      const dbCusts: any[] = [];
-      snapshot.forEach(d => dbCusts.push(d.data()));
-      const filteredDbCusts = dbCusts.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      
-      const localCustsStr = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
-      let localCusts: any[] = [];
-      try { if (localCustsStr) localCusts = JSON.parse(localCustsStr); } catch(e) {}
-      
-      const mergedMap = new Map<string, any>();
-      localCusts.forEach(c => { if (c && c.id) mergedMap.set(String(c.id), c); });
-      
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'removed') {
-          mergedMap.delete(String(change.doc.id));
-        }
-      });
-      
-      filteredDbCusts.forEach(c => { if (c && c.id) mergedMap.set(String(c.id), c); });
-      
-      const finalCusts = Array.from(mergedMap.values());
-      localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(finalCusts));
-      localStorage.setItem(`bizflow_customers_v1`, JSON.stringify(finalCusts));
-      callback('customers', finalCusts);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for customers. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'expenses')), (snapshot) => {
-      const dbExp: any[] = [];
-      snapshot.forEach(d => dbExp.push(d.data()));
-      const filteredDbExp = dbExp.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      
-      const localExpStr = localStorage.getItem(`bizflow_${orgId}_expenses_v1`) || localStorage.getItem('bizflow_expenses_v1');
-      let localExp: any[] = [];
-      try { if (localExpStr) localExp = JSON.parse(localExpStr); } catch(e) {}
-      
-      const mergedMap = new Map<string, any>();
-      localExp.forEach(e => { if (e && e.id) mergedMap.set(String(e.id), e); });
-      
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'removed') {
-          mergedMap.delete(String(change.doc.id));
-        }
-      });
-      
-      filteredDbExp.forEach(e => { if (e && e.id) mergedMap.set(String(e.id), e); });
-      
-      const finalExp = Array.from(mergedMap.values());
-      localStorage.setItem(`bizflow_${orgId}_expenses_v1`, JSON.stringify(finalExp));
-      localStorage.setItem(`bizflow_expenses_v1`, JSON.stringify(finalExp));
-      callback('expenses', finalExp);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for expenses. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'main_return_stock')), (snapshot) => {
-      const dbReturns: any[] = [];
-      snapshot.forEach(d => {
-        const item = d.data();
-        if (!item.organizationId || item.organizationId === orgId) {
-          dbReturns.push({ ...item, id: item.id || d.id });
-        }
-      });
-      localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(dbReturns));
-      localStorage.setItem(`bizflow_main_return_stock_v1`, JSON.stringify(dbReturns));
-      callback('main_return_stock', dbReturns);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for return stock. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(doc(db, 'system', `org_${orgId}_aiactions`), (snapshot) => {
-      if (snapshot.exists() && snapshot.data().data) {
-        localStorage.setItem(`bizflow_${orgId}_aiactions_v1`, JSON.stringify(snapshot.data().data));
-        callback('aiactions', snapshot.data().data);
-      }
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for actions. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(doc(db, 'system', `org_${orgId}_attendance`), (snapshot) => {
-      if (snapshot.exists() && snapshot.data().data) {
-        localStorage.setItem(`bizflow_${orgId}_attendance_v1`, JSON.stringify(snapshot.data().data));
-        callback('attendance', snapshot.data().data);
-      }
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for attendance. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(doc(db, 'system', `org_${orgId}_inventory`), (snapshot) => {
-      if (snapshot.exists() && snapshot.data().data) {
-        localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(snapshot.data().data));
-        localStorage.setItem(`bizflow_admin_inventory_v1`, JSON.stringify(snapshot.data().data));
-        callback('inventory', snapshot.data().data);
-      }
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for inventory. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(doc(db, 'system', `org_${orgId}_settings`), (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(data));
-        callback('settings', data);
-      }
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for settings. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(doc(db, 'system', `org_${orgId}_settlements`), (snapshot) => {
-      if (snapshot.exists() && snapshot.data().data) {
-        const data = snapshot.data().data;
-        localStorage.setItem(`bizflow_${orgId}_settlements_v1`, JSON.stringify(data));
-        callback('settlements', data);
-      }
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for settlements. Operating on robust local cache fallback.", error);
-    }),
-    onSnapshot(query(collection(db, 'settlements')), (snapshot) => {
-      const dbSettlements: any[] = [];
-      snapshot.forEach(d => {
-        const data = d.data();
-        dbSettlements.push({ ...data, id: data.id || d.id, docId: d.id });
-      });
-      const filteredDbSettlements = dbSettlements.filter((item: any) => !item.organizationId || item.organizationId === orgId);
-      
-      const localSettlementsStr = localStorage.getItem(`bizflow_${orgId}_settlements_v1`);
-      let localSettlements: any[] = [];
-      try { if (localSettlementsStr) localSettlements = JSON.parse(localSettlementsStr); } catch(e) {}
-      
-      const mergedMap = new Map<string, any>();
-      localSettlements.forEach(s => { if (s && s.id) mergedMap.set(String(s.id), s); });
-      filteredDbSettlements.forEach(s => { if (s && s.id) mergedMap.set(String(s.id), s); });
-      
-      const finalSettlements = Array.from(mergedMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      localStorage.setItem(`bizflow_${orgId}_settlements_v1`, JSON.stringify(finalSettlements));
-      callback('settlements', finalSettlements);
-    }, (error) => {
-      console.warn("Real-time sync inactive or denied for settlements collection fallback.", error);
-    })
-  ];
-
-  return () => {
-    unsubs.forEach(unsub => unsub());
-    repInvUnsubs.forEach(unsub => unsub());
-  };
+  // Realtime listeners disabled to reduce quota usage.
+  return () => {};
 };
 
 export const listenToRepInventory = async (repId: string, callback: (inv: RepInventoryItem[]) => void) => {
-  const orgId = getActiveOrgId();
-  const [{ db }, { doc, onSnapshot }] = await Promise.all([import('./sync'), import('firebase/firestore')]);
-  return onSnapshot(doc(db, 'system', `org_${orgId}_repinv_${repId}`), (snapshot) => {
-    if (snapshot.exists() && snapshot.data().data) {
-      localStorage.setItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(snapshot.data().data));
-      callback(snapshot.data().data);
-    }
-  }, (error) => {
-    console.warn(`Real-time sync inactive or denied for rep inventory ${repId}. Operating on robust local cache fallback.`, error);
-  });
+  // Realtime listeners disabled to reduce quota usage.
+  return () => {};
 };
 
 // --- STORAGE HEALTH & HIGH-SPEED CACHE PURGE UTILITY ---
@@ -1213,9 +1009,21 @@ export const purgeAppCache = async (): Promise<{ freedKB: number }> => {
           key.startsWith('bizflow_temp_') ||
           key.includes('quota_exhausted') ||
           key.startsWith('loglevel:') ||
-          key === 'bizflow_network_logs'
+          key === 'bizflow_network_logs' ||
+          key === 'bizflow_network_logs_v1'
         ) {
           keysToRemove.push(key);
+        } else if (key.endsWith('_network_logs_v1')) {
+          // Compact organization network logs to max 20 entries
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const logs = JSON.parse(raw);
+              if (Array.isArray(logs) && logs.length > 20) {
+                safeSetItem(key, JSON.stringify(logs.slice(0, 20)));
+              }
+            }
+          } catch (err) {}
         }
       }
       keysToRemove.forEach(k => localStorage.removeItem(k));
@@ -1382,15 +1190,15 @@ export function persistSalesAndCustomers(
   customerForSync: any = null
 ) {
   try {
-    localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(allSales));
-    localStorage.setItem(`bizflow_MYM-BIZFLOW_sales_v1`, JSON.stringify(allSales));
-    localStorage.setItem('bizflow_sales_v1', JSON.stringify(allSales));
+    safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(allSales));
+    safeSetItem(`bizflow_MYM-BIZFLOW_sales_v1`, JSON.stringify(allSales));
+    safeSetItem('bizflow_sales_v1', JSON.stringify(allSales));
   } catch (e) {}
 
   try {
-    localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(allCustomers));
-    localStorage.setItem(`bizflow_MYM-BIZFLOW_customers_v1`, JSON.stringify(allCustomers));
-    localStorage.setItem('bizflow_customers_v1', JSON.stringify(allCustomers));
+    safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(allCustomers));
+    safeSetItem(`bizflow_MYM-BIZFLOW_customers_v1`, JSON.stringify(allCustomers));
+    safeSetItem('bizflow_customers_v1', JSON.stringify(allCustomers));
   } catch (e) {}
 
   if (typeof window !== 'undefined') {

@@ -30,6 +30,39 @@ const getStorageKey = () => {
   return `bizflow_${orgId}_network_logs_v1`;
 };
 
+// Save to local storage with robust quota management and trimming
+const saveNetworkLogsSafely = (logs: NetworkSignalLog[]) => {
+  if (typeof window === 'undefined') return;
+  const key = getStorageKey();
+
+  // Try to remove redundant legacy duplicate key to immediately reclaim storage space
+  try {
+    localStorage.removeItem('bizflow_network_logs_v1');
+    localStorage.removeItem('bizflow_network_logs');
+  } catch (e) {}
+
+  // Cap logs to recent 25 items by default to prevent storage bloating
+  const trimmed = (logs || []).slice(0, 25);
+
+  try {
+    localStorage.setItem(key, JSON.stringify(trimmed));
+  } catch (quotaErr) {
+    // If quota exceeded, trim more aggressively to 10 logs
+    try {
+      const ultraTrimmed = trimmed.slice(0, 10);
+      localStorage.setItem(key, JSON.stringify(ultraTrimmed));
+    } catch (secondErr) {
+      // If still exceeding, keep only 3 most recent entries
+      try {
+        const minimal = trimmed.slice(0, 3);
+        localStorage.setItem(key, JSON.stringify(minimal));
+      } catch (finalErr) {
+        // Suppress gracefully without crashing or throwing
+      }
+    }
+  }
+};
+
 export const getNetworkSignalLogs = (repId?: string, date?: string): NetworkSignalLog[] => {
   if (typeof window === 'undefined') return [];
   try {
@@ -48,7 +81,6 @@ export const getNetworkSignalLogs = (repId?: string, date?: string): NetworkSign
 
     return list.sort((a, b) => b.timestamp - a.timestamp);
   } catch (err) {
-    console.error('Error loading network signal logs:', err);
     return [];
   }
 };
@@ -159,16 +191,13 @@ export const recordNetworkSignalLog = async (
     }
   } catch (e) {}
 
-  // Save to local storage only to prevent Firestore quota exhaustion
+  // Save to local storage safely with automatic trimming
   try {
-    const key = getStorageKey();
     const existing = getNetworkSignalLogs();
-    // Keep max 100 logs locally
-    const updated = [log, ...existing].slice(0, 100);
-    localStorage.setItem(key, JSON.stringify(updated));
-    localStorage.setItem('bizflow_network_logs_v1', JSON.stringify(updated));
+    const updated = [log, ...existing];
+    saveNetworkLogsSafely(updated);
   } catch (err) {
-    console.error('Failed to save signal log locally:', err);
+    // Suppress quota failures
   }
 
   return log;

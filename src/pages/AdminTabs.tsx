@@ -67,14 +67,20 @@ export function OverviewTab({ repsList, isGhostMode }: { repsList: any[], isGhos
     });
     fetchTableData('network_logs').then(data => {
       if (data && Array.isArray(data)) {
-        // Merge with local
+        // Merge with local safely
         try {
           const key = `bizflow_${orgId}_network_logs_v1`;
           const local: NetworkSignalLog[] = JSON.parse(localStorage.getItem(key) || '[]');
           const map = new Map<string, NetworkSignalLog>();
           [...local, ...data].forEach(l => map.set(l.id, l));
-          const merged = Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp);
-          localStorage.setItem(key, JSON.stringify(merged));
+          const merged = Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
+          try {
+            localStorage.setItem(key, JSON.stringify(merged));
+          } catch (e) {
+            try {
+              localStorage.setItem(key, JSON.stringify(merged.slice(0, 10)));
+            } catch (_) {}
+          }
           setSignalLogs(getNetworkSignalLogs(signalFilterRep === 'all' ? undefined : signalFilterRep, signalFilterDate || undefined));
         } catch (e) {}
       }
@@ -569,112 +575,6 @@ export function OverviewTab({ repsList, isGhostMode }: { repsList: any[], isGhos
             </p>
           </div>
         </div>
-      </div>
-
-      {/* Rep 4G & Network Signal Report Section */}
-      <div className="mt-8 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-          <div>
-            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-amber-500" />
-              රෙප්වරුන්ගේ 4G සංඥා සහ ජාල වාර්තාව (Rep 4G & Network Signal Report)
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              රෙප්වරුන් සිටින ස්ථානවල 4G සංඥා තත්ත්වය, ඔන්ලයින්/ඕෆ්ලයින් ස්වභාවය සහ බැටරි මට්ටම දිනපතා නිරීක්ෂණය කරන්න.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              value={signalFilterRep}
-              onChange={(e) => setSignalFilterRep(e.target.value)}
-              className="text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 font-medium text-slate-700 outline-none"
-            >
-              <option value="all">සියලුම රෙප්වරු (All Reps)</option>
-              {repsList.map((r: any) => (
-                <option key={r.id} value={r.id}>{r.name} ({r.activeArea || 'Area'})</option>
-              ))}
-            </select>
-            <input
-              type="date"
-              value={signalFilterDate}
-              onChange={(e) => setSignalFilterDate(e.target.value)}
-              className="text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 font-medium text-slate-700 outline-none"
-            />
-            {signalFilterDate && (
-              <button
-                onClick={() => setSignalFilterDate('')}
-                className="text-xs text-blue-600 font-semibold hover:underline"
-              >
-                Clear Date
-              </button>
-            )}
-          </div>
-        </div>
-
-        {signalLogs.length === 0 ? (
-          <div className="py-12 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
-            <Zap className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-            <p className="text-sm font-medium text-slate-600">තවම සංඥා වාර්තා ලැබී නැත (No signal logs recorded yet)</p>
-            <p className="text-xs text-slate-400 mt-1">රෙප්වරුන් ඇප් එක භාවිතා කරන විට ස්වයංක්‍රීයව සංඥා වාර්තා මෙහි සටහන් වේ.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200 sticky top-0">
-                  <th className="p-3">රෙප් නම (Rep)</th>
-                  <th className="p-3">දිනය සහ වේලාව (Time)</th>
-                  <th className="p-3">ජාල තත්ත්වය (Signal Quality)</th>
-                  <th className="p-3">සංඥා මට්ටම (Signal %)</th>
-                  <th className="p-3">බැටරිය (Battery)</th>
-                  <th className="p-3">ස්ථානය (Location GPS)</th>
-                  <th className="p-3">සටහන (Notes)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                {signalLogs.map((log) => {
-                  let badgeBg = 'bg-slate-100 text-slate-700 border-slate-200';
-                  if (log.signalQuality === 'Strong 4G') badgeBg = 'bg-emerald-100 text-emerald-800 border-emerald-300';
-                  else if (log.signalQuality === 'Moderate 3G/4G') badgeBg = 'bg-blue-100 text-blue-800 border-blue-300';
-                  else if (log.signalQuality === 'Weak Connection') badgeBg = 'bg-amber-100 text-amber-800 border-amber-300';
-                  else if (log.signalQuality.includes('No Signal')) badgeBg = 'bg-rose-100 text-rose-800 border-rose-300';
-
-                  return (
-                    <tr key={log.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="p-3 font-semibold text-slate-900">{log.repName}</td>
-                      <td className="p-3 text-slate-500 font-mono text-[11px]">{log.date} {log.time}</td>
-                      <td className="p-3">
-                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold border inline-flex items-center gap-1 ${badgeBg}`}>
-                          {log.signalQuality}
-                        </span>
-                      </td>
-                      <td className="p-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 bg-slate-200 rounded-full h-2 overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full ${log.signalPercentage > 70 ? 'bg-emerald-500' : log.signalPercentage > 30 ? 'bg-amber-500' : 'bg-rose-500'}`} 
-                              style={{ width: `${log.signalPercentage}%` }}
-                            ></div>
-                          </div>
-                          <span className="font-mono text-[11px]">{log.signalPercentage}%</span>
-                        </div>
-                      </td>
-                      <td className="p-3 font-mono text-[11px]">
-                        {log.batteryLevel !== undefined ? `${log.batteryLevel}% ${log.isCharging ? '⚡' : ''}` : '-'}
-                      </td>
-                      <td className="p-3 text-[11px] font-mono text-slate-500">
-                        {log.location ? `${log.location.latitude}, ${log.location.longitude}` : 'Not Available'}
-                      </td>
-                      <td className="p-3 text-slate-600 italic max-w-xs truncate" title={log.notes}>
-                        {log.notes || '-'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -5629,12 +5529,24 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
             </div>
           </div>
         ) : (
-          <button 
-            onClick={(e) => { e.preventDefault(); setShowClearConfirm(true); }}
-            className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-rose-500/15 transition-all"
-          >
-            {lang === 'si' ? 'සියලුම දත්ත මකා දමන්න (Delete All Data)' : 'Delete All Data'}
-          </button>
+          <div className="space-y-3">
+            <button 
+              onClick={(e) => { e.preventDefault(); setShowClearConfirm(true); }}
+              className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-rose-500/15 transition-all"
+            >
+              {lang === 'si' ? 'සියලුම දත්ත මකා දමන්න (Delete All Data)' : 'Delete All Data'}
+            </button>
+            
+            <button 
+              onClick={(e) => { 
+                e.preventDefault(); 
+                import('../lib/cacheUtils').then(m => m.clearAppCache());
+              }}
+              className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-amber-500/15 transition-all"
+            >
+              {lang === 'si' ? 'කැෂේ (Cache) ඉවත් කර නැවත ආරම්භ කරන්න' : 'Clear App Cache & Reload'}
+            </button>
+          </div>
         )}
       </div>
     </div>

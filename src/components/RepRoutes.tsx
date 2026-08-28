@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { MapPin, Search, Calendar, UserX, Navigation, TrendingUp, Store, RefreshCw, Compass } from 'lucide-react';
 import { fetchTableData } from '../lib/sync';
 import { parseLocation } from '../lib/mapHelpers';
@@ -43,7 +43,7 @@ const createNumberedIcon = (number: number, color: string = '#2563EB') => {
   });
 };
 
-function MapLines({ groupedLocations }: { groupedLocations: Record<string, {lat: number, lng: number}[]> }) {
+const MapLines = React.memo(({ groupedLocations }: { groupedLocations: Record<string, {lat: number, lng: number}[]> }) => {
   const colors = ['#2563EB', '#D97706', '#059669', '#DC2626', '#7C3AED'];
   return (
     <>
@@ -64,7 +64,7 @@ function MapLines({ groupedLocations }: { groupedLocations: Record<string, {lat:
       })}
     </>
   );
-}
+});
 
 // Custom hook to set map center and bounds
 function MapUpdater({ mapLocations }: { mapLocations: {lat: number, lng: number}[] }) {
@@ -85,7 +85,7 @@ function MapUpdater({ mapLocations }: { mapLocations: {lat: number, lng: number}
   return null;
 }
 
-export default function RepRoutes({ lang = 'en' }: { lang?: 'en' | 'si' }) {
+export default React.memo(function RepRoutes({ lang = 'en' }: { lang?: 'en' | 'si' }) {
   const [sales, setSales] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchRep, setSearchRep] = useState('');
@@ -127,7 +127,7 @@ export default function RepRoutes({ lang = 'en' }: { lang?: 'en' | 'si' }) {
     setLoading(false);
   };
 
-  const filteredSales = sales.filter(s => {
+  const filteredSales = useMemo(() => sales.filter(s => {
       if (!s || s.status === 'cancelled') return false;
       const matchRep = !searchRep || 
                        (s.repId || '').toLowerCase().includes(searchRep.toLowerCase()) || 
@@ -136,36 +136,42 @@ export default function RepRoutes({ lang = 'en' }: { lang?: 'en' | 'si' }) {
       const sDateStr = s.createdAt ? (typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString()) : '';
       const matchDate = sDateStr.startsWith(searchDate);
       return matchRep && matchDate;
-  });
+  }), [sales, searchRep, searchDate]);
 
   // Extract unique reps from today's sales
-  const uniqueReps = Array.from(new Set(sales.map(s => s.repId).filter(Boolean)));
+  const uniqueReps = useMemo(() => Array.from(new Set(sales.map(s => s.repId).filter(Boolean))), [sales]);
 
   // Calculate Map center
-  const mapLocations = filteredSales
+  const mapLocations = useMemo(() => filteredSales
       .map(s => parseLocation(s.locationStr))
-      .filter(l => l !== null) as {lat: number, lng: number}[];
+      .filter(l => l !== null) as {lat: number, lng: number}[], [filteredSales]);
   
   // Group by Rep for polylines
-  const groupedLocations: Record<string, {lat: number, lng: number}[]> = {};
-  filteredSales.forEach(s => {
-      const loc = parseLocation(s.locationStr);
-      if (loc && s.repId) {
-          if (!groupedLocations[s.repId]) groupedLocations[s.repId] = [];
-          groupedLocations[s.repId].push({lat: loc.lat, lng: loc.lng});
-      }
-  });
+  const groupedLocations = useMemo(() => {
+    const gl: Record<string, {lat: number, lng: number}[]> = {};
+    filteredSales.forEach(s => {
+        const loc = parseLocation(s.locationStr);
+        if (loc && s.repId) {
+            if (!gl[s.repId]) gl[s.repId] = [];
+            gl[s.repId].push({lat: loc.lat, lng: loc.lng});
+        }
+    });
+    return gl;
+  }, [filteredSales]);
 
   // Calculate total route distance covered
-  let totalDistanceKm = 0;
-  Object.values(groupedLocations).forEach(locList => {
-    for (let i = 0; i < locList.length - 1; i++) {
-      totalDistanceKm += calculateDistanceKm(locList[i].lat, locList[i].lng, locList[i+1].lat, locList[i+1].lng);
-    }
-  });
+  const totalDistanceKm = useMemo(() => {
+    let dist = 0;
+    Object.values(groupedLocations).forEach(locList => {
+      for (let i = 0; i < locList.length - 1; i++) {
+        dist += calculateDistanceKm(locList[i].lat, locList[i].lng, locList[i+1].lat, locList[i+1].lng);
+      }
+    });
+    return dist;
+  }, [groupedLocations]);
 
-  const totalRouteSales = filteredSales.reduce((acc, s) => acc + Number(s.total || s.creditReceivedAmount || 0), 0);
-  const gpsTaggedCount = filteredSales.filter(s => !!parseLocation(s.locationStr)).length;
+  const totalRouteSales = useMemo(() => filteredSales.reduce((acc, s) => acc + Number(s.total || s.creditReceivedAmount || 0), 0), [filteredSales]);
+  const gpsTaggedCount = useMemo(() => filteredSales.filter(s => !!parseLocation(s.locationStr)).length, [filteredSales]);
 
   return (
     <div className="space-y-6">
@@ -421,4 +427,4 @@ export default function RepRoutes({ lang = 'en' }: { lang?: 'en' | 'si' }) {
       </div>
     </div>
   );
-}
+});

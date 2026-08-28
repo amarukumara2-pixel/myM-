@@ -40,6 +40,7 @@ import { DailySettlementsTab } from '../components/DailySettlementsTab';
 import html2canvas from 'html2canvas';
 import { withOklchBypass } from '../lib/canvasUtils';
 import { sendTopPhoneNotification } from '../lib/notificationService';
+import { clearAppCache } from '../lib/cacheUtils';
 
 import { getGeminiApiKey, generateGeminiContent } from '../lib/gemini';
 import { calculateMonthlySubscription, SubscriptionSettings } from '../services/billingService';
@@ -698,7 +699,7 @@ export default function AdminDashboard() {
     { 
       id: 'diagnostic', 
       label: 'Sync Diagnostic', 
-      icon: <Wifi size={32} />, 
+      icon: null, 
       color: 'text-purple-600', 
       cardBg: 'from-purple-50/60 via-white to-purple-50/10', 
       borderColor: 'border-purple-100',
@@ -878,11 +879,11 @@ export default function AdminDashboard() {
              <div className="flex items-center gap-2">
                {isOnline ? (
                  <span className="flex items-center text-xs font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1.5 rounded-full" title="Online">
-                   <Wifi size={14} className="mr-1" /> Online
+                    Online
                  </span>
                ) : (
                  <span className="flex items-center text-xs font-bold text-rose-400 bg-rose-400/10 px-2 py-1.5 rounded-full" title="Offline - Working Locally">
-                   <WifiOff size={14} className="mr-1" /> Offline
+                    Offline
                  </span>
                )}
              </div>

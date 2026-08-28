@@ -12,7 +12,6 @@ import {
   query,
   getDocFromServer,
   where,
-  onSnapshot,
   disableNetwork,
   enableNetwork,
   setLogLevel
@@ -619,6 +618,7 @@ if (typeof window !== 'undefined') {
   // Run auto-sync as soon as online connectivity is detected
   window.addEventListener('online', () => {
     console.log('Online detected. Auto-syncing unsynced rep data to Firebase...');
+    pushUnsyncedLocalDataToCloud();
     triggerAutoSyncDebounced(300);
   });
 
@@ -638,8 +638,9 @@ if (typeof window !== 'undefined') {
   // Initial startup sweep if online
   if (navigator.onLine) {
     setTimeout(() => {
+      pushUnsyncedLocalDataToCloud();
       triggerAutoSyncDebounced(1500);
-    }, 2000);
+    }, 1000);
   }
 }
 
@@ -838,95 +839,25 @@ export const pushUnsyncedLocalDataToCloud = async () => {
 
 let listenersInitialized = false;
 
+// Global interval to fetch fresh data periodically for all critical tables
+let syncInterval: any = null;
+
 export const initRealtimeSyncListeners = () => {
-  if (typeof window === 'undefined' || listenersInitialized || isQuotaPaused()) return;
-  listenersInitialized = true;
-
-  const orgId = getActiveOrgId();
-  const tables = ['sales', 'settlements', 'expenses', 'customers', 'suppliers', 'main_return_stock'];
-
-  tables.forEach(table => {
-    try {
-      const colRef = collection(db, table);
-      onSnapshot(colRef, (snapshot) => {
-        if (snapshot.metadata.hasPendingWrites) return;
-        const cloudDocs = snapshot.docs.map(d => {
-          const data = d.data();
-          return { ...data, id: data.id || d.id, docId: d.id };
-        }).filter((item: any) => !item.organizationId || item.organizationId === orgId);
-
-        if (cloudDocs.length === 0) return;
-
-        const localKey = `bizflow_${orgId}_${table}_v1`;
-        const fallbackKey = `bizflow_${table}_v1`;
-        const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
-        let localDocs: any[] = [];
+  if (typeof window === 'undefined' || syncInterval || isQuotaPaused()) return;
+  
+  // Fetch fresh data every 5 minutes while the app is active
+  syncInterval = setInterval(async () => {
+    if (navigator.onLine) {
+      console.log('Periodic auto-sync triggered...');
+      const tables = ['sales', 'settlements', 'expenses', 'customers', 'suppliers'];
+      for (const table of tables) {
         try {
-          if (localStr) localDocs = JSON.parse(localStr);
-        } catch (e) {}
-
-        const mergedMap = new Map<string, any>();
-        localDocs.forEach(item => {
-          if (item && item.id !== undefined) mergedMap.set(String(item.id), item);
-        });
-        cloudDocs.forEach((item: any) => {
-          if (item && item.id !== undefined) {
-            const existing = mergedMap.get(String(item.id));
-            const cTime = item.updatedAt || Number(item.createdAt) || 0;
-            const eTime = existing ? (existing.updatedAt || Number(existing.createdAt) || 0) : 0;
-            if (!existing || cTime >= eTime) {
-              mergedMap.set(String(item.id), item);
-            }
-          }
-        });
-
-        const finalDocs = Array.from(mergedMap.values());
-        localStorage.setItem(localKey, JSON.stringify(finalDocs));
-        localStorage.setItem(fallbackKey, JSON.stringify(finalDocs));
-
-        broadcastSync(table, finalDocs);
-      }, (error) => {
-        const errMsg = error?.message || String(error);
-        if (errMsg.includes('quota') || errMsg.includes('resource-exhausted')) {
-          markQuotaExceeded();
+          await fetchTableData(table, { limitCount: 50 }); // Fetch just recent changes
+        } catch (e) {
+          console.warn(`Auto-sync failed for ${table}:`, e);
         }
-      });
-    } catch (e) {}
-  });
-
-  try {
-    const sysCol = collection(db, 'system');
-    onSnapshot(sysCol, (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'added' || change.type === 'modified') {
-          const docData = change.doc.data();
-          const docId = change.doc.id;
-          if (docId.startsWith(`org_${orgId}_`)) {
-            if (docId.includes('_inventory')) {
-              localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(docData.data));
-              localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(docData.data));
-              broadcastSync('admin_inventory', docData.data);
-            } else if (docId.includes('_returns')) {
-              localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(docData.data));
-              localStorage.setItem('bizflow_main_return_stock_v1', JSON.stringify(docData.data));
-              broadcastSync('main_return_stock', docData.data);
-            } else if (docId.includes('_repinv_')) {
-              const repId = docId.replace(`org_${orgId}_repinv_`, '');
-              localStorage.setItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(docData.data));
-              broadcastSync(`repinv_${repId}`, docData.data);
-            } else if (docId.includes('_settings')) {
-              localStorage.setItem(`bizflow_${orgId}_settings`, JSON.stringify(docData));
-              broadcastSync('settings', docData);
-            }
-          }
-        }
-      });
-    }, (error) => {
-      const errMsg = error?.message || String(error);
-      if (errMsg.includes('quota') || errMsg.includes('resource-exhausted')) {
-        markQuotaExceeded();
       }
-    });
-  } catch (e) {}
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 };
+

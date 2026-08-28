@@ -64,9 +64,6 @@ function Home() {
           loadData();
         });
       });
-      import('./lib/sync').then(mod => {
-        mod.initRealtimeSyncListeners();
-      });
     }
 
     const handleSync = (e: any) => {
@@ -468,6 +465,10 @@ function Home() {
 export default function App() {
   useEffect(() => {
     // Start listening for cloud changes to sync data across devices in real-time
+    import('./lib/sync').then(mod => {
+      mod.initRealtimeSyncListeners();
+    });
+
     let unsubscribe: (() => void) | undefined;
     
     import('./lib/store').then(mod => {

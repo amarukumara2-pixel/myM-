@@ -230,7 +230,6 @@ export const DailySettlementsTab: React.FC<DailySettlementsTabProps> = ({ lang =
                 <th className="py-4 px-6 text-right">එකතු වූ චෙක්පත් (Cheques)</th>
                 <th className="py-4 px-6 text-right">අඩු කිරීම් (Deductions)</th>
                 <th className="py-4 px-6 text-right">භාරදුන් ශුද්ධ මුදල (Net Cash)</th>
-                <th className="py-4 px-6 text-right">ලාභය (Profit)</th>
                 <th className="py-4 px-6 text-center">තත්ත්වය (Status)</th>
                 <th className="py-4 px-6 text-right">ක්‍රියාමාර්ග (Action)</th>
               </tr>
@@ -265,9 +264,6 @@ export const DailySettlementsTab: React.FC<DailySettlementsTabProps> = ({ lang =
                     </td>
                     <td className="py-4 px-6 text-right font-mono font-black text-emerald-600 text-base">
                       Rs. {netCash.toLocaleString()}
-                    </td>
-                    <td className="py-4 px-6 text-right font-mono font-black text-amber-600">
-                      Rs. {Number(s.netProfit ?? s.grossProfit ?? 0).toLocaleString()}
                     </td>
                     <td className="py-4 px-6 text-center">
                       <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">

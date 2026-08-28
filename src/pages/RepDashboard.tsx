@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+/* TEMPORARY */
 import { createPortal } from 'react-dom';
 import { useTranslation, formatSinhalaDate } from '../i18n';
 import { Link, useNavigate } from 'react-router-dom';
 import imageCompression from 'browser-image-compression';
 import { motion, AnimatePresence } from 'motion/react';
-import { Camera, Printer, Truck, CheckSquare, DollarSign, Globe, Home, Bot, Plus, Trash2, Send, Edit, ChevronRight, Package, ArrowDown, ArrowUp, ArrowUpRight, ArrowDownLeft, FileText, Wifi, WifiOff, CloudCog, CheckCircle, AlertTriangle, Wallet, Search, LogOut, ArrowLeft, Share2, Settings, Eye, EyeOff, Maximize2, Minimize2, X, RefreshCw, Download, Upload, Undo2, ShoppingCart, RotateCcw, Fingerprint, MessageSquare } from 'lucide-react';
+import { Camera, Printer, Truck, CheckSquare, DollarSign, Globe, Home, Bot, Plus, Trash2, Send, Edit, ChevronRight, Package, ArrowDown, ArrowUp, ArrowUpRight, ArrowDownLeft, FileText, Wifi, WifiOff, CloudCog, CheckCircle, AlertTriangle, Wallet, Search, LogOut, ArrowLeft, Share2, Settings, Eye, EyeOff, Maximize2, Minimize2, X, RefreshCw, Download, Upload, Undo2, ShoppingCart, RotateCcw, Fingerprint, MessageSquare, Clock, Bell, CloudUpload, CheckCircle2, Sparkles } from 'lucide-react';
 import ThermalLogo from '../components/ThermalLogo';
 import { BillPreviewModal } from '../components/BillPreviewModal';
 import { BillPrintLayout } from '../components/BillPrintLayout';
@@ -20,7 +21,7 @@ import { withOklchBypass } from '../lib/canvasUtils';
 import { printCanvasViaBluetooth, generateEscPosImage, uint8ArrayToBase64, connectBluetoothPrinter } from '../lib/bluetoothPrinter';
 import { FireworksBackground } from '../components/Fireworks';
 import { CustomerHistoryTab } from '../components/CustomerHistoryTab';
-import { sendTopPhoneNotification } from '../lib/notificationService';
+import { sendTopPhoneNotification, playNotificationSound } from '../lib/notificationService';
 import { startNetworkLogger } from '../lib/networkLogger';
 
 export const parseSaleDate = (val: any): Date | null => {
@@ -169,7 +170,6 @@ export default function RepDashboard() {
   useEffect(() => {
     if (!currentRep?.id) return;
     updateUserOnlineStatus(currentRep.id);
-    startNetworkLogger(currentRep.id, currentRep.name);
     const interval = setInterval(() => {
       updateUserOnlineStatus(currentRep.id);
     }, 15000);
@@ -255,6 +255,11 @@ export default function RepDashboard() {
   const [isStartingDay, setIsStartingDay] = useState(false);
   const [editingSale, setEditingSale] = useState<any | null>(null);
 
+  // 4:00 PM - 6:00 PM Hourly Sync Reminder Popup States
+  const [showEveningSyncReminder, setShowEveningSyncReminder] = useState(false);
+  const [isEveningSyncing, setIsEveningSyncing] = useState(false);
+  const [eveningSyncDone, setEveningSyncDone] = useState(false);
+
   // Real-time Push Notification Change Tracking Refs
   const prevReqStatusRef = useRef<Record<string, string>>({});
   const prevRepStockRef = useRef<Record<string, number>>({});
@@ -264,7 +269,7 @@ export default function RepDashboard() {
   useEffect(() => {
     const timer = setTimeout(() => {
       isInitialLoadDoneRef.current = true;
-    }, 2500);
+    }, 4000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -365,6 +370,120 @@ export default function RepDashboard() {
       clearInterval(syncTimer);
     };
   }, [currentRep]);
+
+  // 4:00 PM - 6:00 PM Hourly Refresh & Sync Reminder Logic
+  useEffect(() => {
+    if (!currentRep) return;
+
+    const checkHourlySyncReminder = () => {
+      const now = new Date();
+      const hour = now.getHours(); // 0-23
+      // Window: 4:00 PM to 6:00 PM (16:00 to 18:00 inclusive)
+      const isInTimeWindow = hour >= 16 && hour <= 18;
+      if (!isInTimeWindow) return;
+
+      const todayStr = now.toISOString().split('T')[0];
+      const slotKey = `bizflow_sync_reminder_${currentRep.id}_${todayStr}_h${hour}`;
+      const isSlotAlreadyHandled = localStorage.getItem(slotKey);
+
+      // Check minimum 45 minutes between popups
+      const lastShownTs = Number(localStorage.getItem(`bizflow_sync_reminder_last_ts_${currentRep.id}`) || 0);
+      const isTimePassed = (Date.now() - lastShownTs) > 45 * 60 * 1000;
+
+      if (!isSlotAlreadyHandled && isTimePassed) {
+        setShowEveningSyncReminder(true);
+        setEveningSyncDone(false);
+        try {
+          playNotificationSound();
+          sendTopPhoneNotification(
+            '📢 දත්ත Refresh කර යැවීමේ මතක් කිරීම (4 PM - 6 PM)',
+            'දවසේ විකුණුම් හා ගනුදෙනු දත්ත නිවැරදිව පද්ධතියට යැවීමට කරුණාකර Refresh & Sync කරන්න.',
+            'general'
+          );
+        } catch (e) {}
+      }
+    };
+
+    // Initial check after 2.5s
+    const initialTimer = setTimeout(checkHourlySyncReminder, 2500);
+
+    // Periodic check every 30 seconds
+    const checkInterval = setInterval(checkHourlySyncReminder, 30000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(checkInterval);
+    };
+  }, [currentRep]);
+
+  const handleDismissEveningReminder = () => {
+    if (currentRep) {
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      const hour = now.getHours();
+      const slotKey = `bizflow_sync_reminder_${currentRep.id}_${todayStr}_h${hour}`;
+      try {
+        localStorage.setItem(slotKey, 'dismissed');
+        localStorage.setItem(`bizflow_sync_reminder_last_ts_${currentRep.id}`, Date.now().toString());
+      } catch (e) {}
+    }
+    setShowEveningSyncReminder(false);
+  };
+
+  const handleExecuteEveningSync = async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setIsEveningSyncing(false);
+      setSyncStatus({ 
+        checking: false, 
+        success: false, 
+        message: lang === 'si' ? '⚠️ අන්තර්ජාල සම්බන්ධතාවයක් (Internet) නොමැත! කරුණාකර ඔන්ලයින් (Online) වී නැවත උත්සාහ කරන්න.' : '⚠️ No internet connection! Please go online to sync.' 
+      });
+      return;
+    }
+
+    setIsEveningSyncing(true);
+    try {
+      const [{ pushUnsyncedLocalDataToCloud, processSyncQueue }, mod] = await Promise.all([
+        import('../lib/sync'),
+        import('../lib/store')
+      ]);
+
+      // 1. Push all pending unsynced sales, debts, settlements, expenses, attendance to Firebase Cloud
+      await pushUnsyncedLocalDataToCloud();
+      await processSyncQueue();
+
+      // 2. Refresh updates from Cloud
+      await mod.syncAllFromCloud();
+      if (currentRep) {
+        await mod.syncRepFromCloud(currentRep.id);
+        const all = mod.getUsers();
+        const freshRep = all.find(u => u.id === currentRep.id) || currentRep;
+        setCurrentRep(freshRep);
+
+        // Record successful sync for this hour slot
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        const hour = now.getHours();
+        const slotKey = `bizflow_sync_reminder_${currentRep.id}_${todayStr}_h${hour}`;
+        try {
+          localStorage.setItem(slotKey, 'synced');
+          localStorage.setItem(`bizflow_sync_reminder_last_ts_${currentRep.id}`, Date.now().toString());
+        } catch (e) {}
+      }
+
+      setEveningSyncDone(true);
+      setSyncStatus({ checking: false, success: true, message: lang === 'si' ? 'දත්ත සාර්ථකව පද්ධතියට යවන ලදී (Synced)!' : 'Data refreshed and synced successfully!' });
+
+      setTimeout(() => {
+        setIsEveningSyncing(false);
+        setShowEveningSyncReminder(false);
+      }, 1600);
+    } catch (err) {
+      console.error('Evening sync error:', err);
+      setIsEveningSyncing(false);
+      setSyncStatus({ checking: false, success: false, message: lang === 'si' ? 'දත්ත යැවීමේදී දෝෂයක් සිදුවිය' : 'Sync error occurred' });
+    }
+  };
 
   const handleTestConnection = async () => {
     setSyncStatus({ checking: true });
@@ -1103,17 +1222,7 @@ export default function RepDashboard() {
               <Globe size={18} />
             </button>
           </div>
-          <div className="flex items-center justify-between bg-white/5 p-3 rounded-xl border border-white/10">
-             {isOnline ? (
-               <span className="flex items-center text-xs font-bold text-emerald-400">
-                 <Wifi size={14} className="mr-1" /> Online
-               </span>
-             ) : (
-               <span className="flex items-center text-xs font-bold text-rose-400">
-                 <WifiOff size={14} className="mr-1" /> Offline
-               </span>
-             )}
-          </div>
+
         </div>
         <div className="flex-1 py-4 px-3 flex flex-col gap-1 overflow-y-auto">
           {tabs.map(tab => {
@@ -1185,13 +1294,7 @@ export default function RepDashboard() {
             </div>
             <div className="flex flex-col">
               <h2 className="font-display font-black text-xl tracking-tight leading-tight">MYM BIZFLOW</h2>
-              <div className="flex items-center mt-1">
-                 {isOnline ? (
-                   <Wifi size={12} className="text-emerald-400 mr-2" />
-                 ) : (
-                   <WifiOff size={12} className="text-rose-400 mr-2" />
-                 )}
-              </div>
+
             </div>
           </div>
         </div>
@@ -1437,12 +1540,7 @@ export default function RepDashboard() {
                 <span className="text-xs font-semibold uppercase text-slate-400">දිනය (Date):</span>
                 <span className="font-semibold text-xs text-slate-700">{formatSinhalaDate(new Date(), { includeWeekday: true })}</span>
               </div>
-              <div className="flex justify-between items-center text-slate-800">
-                <span className="text-xs font-semibold uppercase text-slate-400">ජංගම දත්ත / GPS:</span>
-                <span className="inline-flex items-center text-xs font-bold text-emerald-600 bg-emerald-100/80 px-2.5 py-0.5 rounded-full">
-                  <Wifi size={12} className="mr-1 animate-pulse" /> ස්ථානය සහ ඩේටා සක්‍රියයි
-                </span>
-              </div>
+
             </div>
 
             <p className="text-slate-600 text-sm leading-relaxed mb-8">
@@ -1540,6 +1638,125 @@ export default function RepDashboard() {
           </div>
         </div>
       )}
+
+      {/* 4:00 PM - 6:00 PM Hourly Refresh & Sync Reminder Modal */}
+      <AnimatePresence>
+        {showEveningSyncReminder && (
+          <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-md flex items-center justify-center z-[10000] p-4">
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              transition={{ type: "spring", damping: 25, stiffness: 350 }}
+              className="bg-white rounded-[2.5rem] max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-100 flex flex-col items-center text-center relative overflow-hidden my-auto"
+            >
+              {/* Header Gradient Stripe */}
+              <div className="absolute top-0 left-0 right-0 h-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500" />
+
+              {/* Close Button top-right */}
+              <button
+                onClick={handleDismissEveningReminder}
+                disabled={isEveningSyncing}
+                className="absolute top-5 right-5 p-2 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                title="Dismiss"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Animated Icon */}
+              <div className="relative mb-5 mt-2">
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-blue-500/10 via-indigo-500/15 to-emerald-500/10 border-2 border-blue-200/80 flex items-center justify-center text-blue-600 shadow-xl shadow-blue-500/10">
+                  {eveningSyncDone ? (
+                    <CheckCircle2 size={42} className="text-emerald-600 animate-bounce" />
+                  ) : isEveningSyncing ? (
+                    <RefreshCw size={40} className="animate-spin text-blue-600" />
+                  ) : (
+                    <CloudUpload size={40} className="text-blue-600 animate-pulse" />
+                  )}
+                </div>
+                <div className="absolute -bottom-1.5 -right-1.5 w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-md border-2 border-white text-xs font-bold">
+                  <Clock size={16} />
+                </div>
+              </div>
+
+              {/* Timing Badge */}
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 border border-blue-200/60 text-blue-700 text-xs font-bold mb-3">
+                <Clock size={13} className="text-blue-600" />
+                <span>{lang === 'si' ? 'ප.ව. 04:00 - 06:00 අතර මතක් කිරීම' : '4:00 PM - 6:00 PM Sync Window'}</span>
+              </div>
+
+              <h3 className="font-display text-2xl sm:text-3xl font-black text-slate-900 tracking-tight mb-2">
+                {lang === 'si' ? 'දත්ත Refresh කර යවන්න' : 'Refresh & Sync Daily Data'}
+              </h3>
+              <p className="text-xs font-bold text-indigo-600 uppercase tracking-widest mb-4">
+                {lang === 'si' ? 'පැයෙන් පැයට මතක් කිරීම (Hourly Reminder)' : 'Hourly Sync Reminder'}
+              </p>
+
+              <p className="text-slate-600 text-sm leading-relaxed mb-6">
+                {lang === 'si'
+                  ? 'දවසේ සිදුකළ සියලුම විකුණුම් බිල්පත්, ණය එකතු කිරීම් සහ වියදම් තොරතුරු ප්‍රධාන පද්ධතියට (Cloud) යැවීමට සහ නවතම තොග යාවත්කාලීන කර ගැනීමට කරුණාකර දැන් Refresh & Sync කරන්න.'
+                  : "Please refresh and send all today's bills, collections, and expense records to the cloud system to keep data synchronized."}
+              </p>
+
+              {/* Status or Details Card */}
+              <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 mb-6 text-left space-y-2">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-500 font-semibold">{lang === 'si' ? 'නියෝජිත (Rep):' : 'Representative:'}</span>
+                  <span className="font-bold text-slate-800">{currentRep?.name || 'Sales Rep'}</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-500 font-semibold">{lang === 'si' ? 'වර්තමාන වේලාව:' : 'Current Time:'}</span>
+                  <span className="font-bold font-mono text-indigo-600">
+                    {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200/60">
+                  <span className="text-slate-500 font-semibold">{lang === 'si' ? 'සමමුහුර්ත තත්ත්වය:' : 'Sync Status:'}</span>
+                  <span className={`font-bold flex items-center gap-1 ${eveningSyncDone ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {eveningSyncDone 
+                      ? (lang === 'si' ? '✓ සාර්ථකව යවන ලදී' : '✓ Synced') 
+                      : (lang === 'si' ? 'නොයැවූ දත්ත Refresh කළ යුතුය' : 'Ready to Sync')}
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="w-full space-y-3">
+                <button
+                  onClick={handleExecuteEveningSync}
+                  disabled={isEveningSyncing}
+                  className="w-full py-4 px-6 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-base rounded-2xl shadow-lg shadow-blue-500/25 flex items-center justify-center transition-all disabled:opacity-60 active:scale-98"
+                >
+                  {isEveningSyncing ? (
+                    <>
+                      <RefreshCw size={20} className="animate-spin mr-2" />
+                      {lang === 'si' ? 'දත්ත යවමින් සහ Refresh වෙමින්...' : 'Syncing with Cloud...'}
+                    </>
+                  ) : eveningSyncDone ? (
+                    <>
+                      <CheckCircle2 size={20} className="mr-2 text-emerald-300" />
+                      {lang === 'si' ? 'දත්ත සාර්ථකව යවන ලදී!' : 'Synced Successfully!'}
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={20} className="mr-2" />
+                      {lang === 'si' ? '🔄 දැන් Refresh කර දත්ත යවන්න (Sync Now)' : 'Refresh & Sync Now'}
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={handleDismissEveningReminder}
+                  disabled={isEveningSyncing}
+                  className="w-full py-3 px-6 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-sm rounded-2xl flex items-center justify-center transition-colors"
+                >
+                  {lang === 'si' ? 'පසුව මතක් කරන්න (Remind in 1 Hour)' : 'Remind me later'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Mobile Bottom Navigation Pill */}
       {activeTab !== 'home' && (
@@ -4220,40 +4437,6 @@ function SettlementTab({ t, currentRep, inventory, setInventory, salesData, lang
            </div>
         </div>
 
-        <div>
-           {/* Profit & Loss Breakdown Card */}
-           <div className="mb-6 bg-slate-900 p-6 rounded-[2rem] shadow-xl text-white border border-slate-800">
-             <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-800">
-               <h4 className="font-display text-base font-bold text-slate-100 flex items-center gap-2">
-                 <span>📊 ලාභය සහ වියදම් සාරාංශය (Profit Breakdown)</span>
-               </h4>
-               <span className="text-xs font-mono bg-white/10 px-2.5 py-1 rounded-full text-slate-300">{selectedDate}</span>
-             </div>
-             
-             <div className="space-y-2.5">
-               <div className="flex justify-between items-center bg-white/5 p-3 rounded-xl text-xs font-bold">
-                 <span className="text-emerald-300">අලෙවි ලාභය (Gross Profit)</span>
-                 <span className="font-mono text-emerald-400 text-sm font-black">Rs {todayGrossProfit.toLocaleString()}</span>
-               </div>
-
-               <div className="flex justify-between items-center bg-white/5 p-3 rounded-xl text-xs font-bold">
-                 <span className="text-rose-300">සෙට්ල්මන්ට් වියදම් (Deducted Expenses)</span>
-                 <span className="font-mono text-rose-400 text-sm font-black">- Rs {todayExpensesTotal.toLocaleString()}</span>
-               </div>
-
-               <div className="flex justify-between items-center bg-emerald-500/20 p-3.5 rounded-xl border border-emerald-500/30 text-sm font-bold">
-                 <span className="text-emerald-200">ශුද්ධ ලාභය (Net Profit)</span>
-                 <span className="font-mono text-white text-base font-black">Rs {todayNetProfit.toLocaleString()}</span>
-               </div>
-
-               {todayOtherExpensesTotal > 0 && (
-                 <div className="flex justify-between items-center bg-amber-500/10 p-3 rounded-xl border border-amber-500/20 text-xs font-bold">
-                   <span className="text-amber-300">වෙනත් වියදම් (නොඅඩු කළ)</span>
-                   <span className="font-mono text-amber-400 text-sm font-black">Rs {todayOtherExpensesTotal.toLocaleString()}</span>
-                 </div>
-               )}
-             </div>
-           </div>
 
            <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.04)] h-fit flex flex-col">
              <h4 className="font-display text-xl font-bold mb-6 text-slate-800">Expenses & Advances</h4>
@@ -4340,7 +4523,6 @@ function SettlementTab({ t, currentRep, inventory, setInventory, salesData, lang
                  </button>
              </div>
            </div>
-        </div>
       </div>
 
       <div className="bg-white rounded-[2rem] border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.04)] p-8">
@@ -5016,63 +5198,6 @@ function CashBookTab({ t, currentRep, setCurrentRep, lang, salesData }: { t: (ke
             onChange={e => setSelectedDate(e.target.value || 'all')}
             className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-emerald-500 shadow-sm"
           />
-        </div>
-      </div>
-
-      {/* Profit & Loss Breakdown Card */}
-      <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-md border border-slate-800">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <span className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl font-bold text-sm">📊</span>
-            <h4 className="font-bold text-base sm:text-lg text-slate-100">
-              {lang === 'si' ? 'ලාභය සහ වියදම් සාරාංශය (Profit & Loss Summary)' : 'Profit & Loss Summary'}
-            </h4>
-          </div>
-          <span className="text-xs font-mono bg-slate-800 text-slate-300 px-3 py-1 rounded-full w-fit">
-            {selectedDate === 'all' ? (lang === 'si' ? 'සියලු කාලයම' : 'All Time') : selectedDate === 'today' ? (lang === 'si' ? 'අද දින' : 'Today') : selectedDate}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-slate-800/80 p-4 rounded-2xl border border-slate-700/60">
-            <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider block mb-1">
-              {lang === 'si' ? 'අලෙවි ලාභය (Gross Profit)' : 'Gross Profit'}
-            </span>
-            <div className="text-2xl font-black text-emerald-400">Rs {computedGrossProfit.toLocaleString()}</div>
-            <span className="text-[11px] text-slate-400 mt-1 block">
-              {lang === 'si' ? 'බිල්පත් අලෙවි ලාභයේ එකතුව' : 'Total sales gross profit'}
-            </span>
-          </div>
-
-          <div className="bg-slate-800/80 p-4 rounded-2xl border border-slate-700/60">
-            <span className="text-xs font-semibold text-rose-400 uppercase tracking-wider block mb-1">
-              {lang === 'si' ? 'සෙට්ල්මන්ට් වියදම් (Deducted)' : 'Deducted Expenses'}
-            </span>
-            <div className="text-2xl font-black text-rose-400">- Rs {computedExpensesTotal.toLocaleString()}</div>
-            <span className="text-[11px] text-slate-400 mt-1 block">
-              {lang === 'si' ? 'ලාභයෙන් අඩු කළ වියදම්' : 'Expenses deducted from profit'}
-            </span>
-          </div>
-
-          <div className="bg-gradient-to-br from-emerald-900/80 to-teal-900/80 p-4 rounded-2xl border border-emerald-500/40">
-            <span className="text-xs font-semibold text-emerald-200 uppercase tracking-wider block mb-1">
-              {lang === 'si' ? 'ශුද්ධ ලාභය (Net Profit)' : 'Net Profit'}
-            </span>
-            <div className="text-2xl font-black text-white">Rs {computedNetProfit.toLocaleString()}</div>
-            <span className="text-[11px] text-emerald-200/80 mt-1 block font-medium">
-              = {lang === 'si' ? 'අලෙවි ලාභය - සෙට්ල්මන්ට් වියදම්' : 'Gross Profit - Expenses'}
-            </span>
-          </div>
-
-          <div className="bg-amber-950/40 p-4 rounded-2xl border border-amber-500/40">
-            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider block mb-1">
-              {lang === 'si' ? 'වෙනත් වියදම් (Non-Deducted)' : 'Other Expenses'}
-            </span>
-            <div className="text-2xl font-black text-amber-300">Rs {computedOtherExpensesTotal.toLocaleString()}</div>
-            <span className="text-[11px] text-amber-200/70 mt-1 block font-medium">
-              {lang === 'si' ? 'සෙට්ල්මන්ට් නොවන වෙනත් වියදම්' : 'Non-deducted expenses'}
-            </span>
-          </div>
         </div>
       </div>
 
