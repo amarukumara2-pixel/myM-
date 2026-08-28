@@ -644,6 +644,12 @@ if (typeof window !== 'undefined') {
   }
 }
 
+export const isSamplePerson = (str: string) => {
+  const s = (str || '').trim().toLowerCase();
+  const banned = ['nimal', 'kamal', 'sunil', 'chamara'];
+  return banned.some(b => s === b || s.includes(b));
+};
+
 export const fetchTableData = async (table: string, options?: { forceAll?: boolean; limitCount?: number }) => {
   const orgId = getActiveOrgId();
   const localKey = `bizflow_${orgId}_${table}_v1`;
@@ -651,7 +657,15 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
   const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
   let localDocs: any[] = [];
   try {
-    if (localStr) localDocs = JSON.parse(localStr);
+    if (localStr) {
+      localDocs = JSON.parse(localStr);
+      if (table === 'sales' && Array.isArray(localDocs)) {
+        localDocs = localDocs.filter((s: any) => {
+          const repName = (s.rep || s.repName || s.salesPerson || s.repId || '').trim().toLowerCase();
+          return !isSamplePerson(repName);
+        });
+      }
+    }
   } catch (e) {}
 
   if (isQuotaPaused() || (typeof navigator !== 'undefined' && !navigator.onLine)) {
@@ -765,7 +779,13 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
     // Merge incoming cloud updates
     cloudDocs.forEach(processItem);
 
-    const finalDocs = Array.from(mergedMap.values()).sort((a, b) => getEpoch(b) - getEpoch(a));
+    let finalDocs = Array.from(mergedMap.values()).sort((a, b) => getEpoch(b) - getEpoch(a));
+    if (table === 'sales') {
+      finalDocs = finalDocs.filter((s: any) => {
+        const repName = (s.rep || s.repName || s.salesPerson || s.repId || '').trim().toLowerCase();
+        return !isSamplePerson(repName);
+      });
+    }
 
     localStorage.setItem(localKey, JSON.stringify(finalDocs));
     localStorage.setItem(fallbackKey, JSON.stringify(finalDocs));

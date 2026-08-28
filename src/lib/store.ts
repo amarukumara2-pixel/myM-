@@ -114,6 +114,12 @@ export interface SystemUser {
   lastOnline?: number;
 }
 
+export const isSamplePerson = (str: string) => {
+  const s = (str || '').trim().toLowerCase();
+  const banned = ['nimal', 'kamal', 'sunil', 'chamara'];
+  return banned.some(b => s === b || s.includes(b));
+};
+
 export const purgeNimalKamal = () => {
   const orgId = getActiveOrgId();
   const userKeys = [`bizflow_${orgId}_users_v2`, 'bizflow_MYM-BIZFLOW_users_v2', 'bizflow_default_users_v2', 'bizflow_users_v2'];
@@ -125,7 +131,7 @@ export const purgeNimalKamal = () => {
         if (Array.isArray(parsed)) {
           const filtered = parsed.filter((u: SystemUser) => {
             const name = (u.name || '').trim().toLowerCase();
-            return name !== 'nimal' && name !== 'kamal' && !name.includes('nimal') && !name.includes('kamal');
+            return !isSamplePerson(name);
           });
           if (filtered.length !== parsed.length) {
             safeSetItem(key, JSON.stringify(filtered));
@@ -143,8 +149,8 @@ export const purgeNimalKamal = () => {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
           const filtered = parsed.filter((s: any) => {
-            const repName = (s.rep || s.repName || s.salesPerson || '').trim().toLowerCase();
-            return repName !== 'nimal' && repName !== 'kamal' && !repName.includes('nimal') && !repName.includes('kamal');
+            const repName = (s.rep || s.repName || s.salesPerson || s.repId || '').trim().toLowerCase();
+            return !isSamplePerson(repName);
           });
           if (filtered.length !== parsed.length) {
             safeSetItem(key, JSON.stringify(filtered));
@@ -168,7 +174,7 @@ export const getUsers = (): SystemUser[] => {
       if (Array.isArray(parsed) && parsed.length > 0) {
         const filtered = parsed.filter((u: SystemUser) => {
           const name = (u.name || '').trim().toLowerCase();
-          return name !== 'nimal' && name !== 'kamal' && !name.includes('nimal') && !name.includes('kamal');
+          return !isSamplePerson(name);
         });
         return filtered;
       }
