@@ -10,6 +10,7 @@ import {
   writeBatch,
   limit,
   query,
+  getDoc,
   getDocFromServer,
   where,
   disableNetwork,
@@ -47,7 +48,7 @@ export const app = initializeApp(configuredFirebase);
 export const db = initializeFirestore(
   app,
   {
-    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true,
     localCache: memoryLocalCache(),
   },
   firestoreDatabaseId
@@ -861,12 +862,13 @@ export const checkSupabaseConnection = async (): Promise<{ success: boolean; mes
   try {
     const connRef = doc(db, 'system', 'connection_test');
     await Promise.race([
-      getDocFromServer(connRef),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+      getDoc(connRef),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
     ]);
     return { success: true, message: 'Firebase Cloud Sync සක්‍රියයි (Connected)' };
-  } catch (_error: any) {
-    return { success: true, message: 'දත්ත සුරක්ෂිතව Offline / Local Storage මගින් ක්‍රියාත්මක වේ' };
+  } catch (error: any) {
+    console.warn('Connection check error:', error);
+    return { success: false, message: 'Offline මාදිලිය - දත්ත Local Storage හි ආරක්ෂිතයි' };
   }
 };
 
