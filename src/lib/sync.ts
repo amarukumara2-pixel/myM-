@@ -685,11 +685,17 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
     // Calculate latest timestamp for delta/incremental fetch
     let maxTimestamp = 0;
     if (Array.isArray(localDocs) && localDocs.length > 0 && !options?.forceAll) {
-      maxTimestamp = Math.max(0, ...localDocs.map(d => getEpoch(d)));
+      const fixedKey = `bizflow_limit_fixed_${table}_v3`;
+      if (!localStorage.getItem(fixedKey)) {
+         options = { ...options, forceAll: true };
+         localStorage.setItem(fixedKey, 'true');
+      } else {
+         maxTimestamp = Math.max(0, ...localDocs.map(d => getEpoch(d)));
+      }
     }
 
     let q: any;
-    const limitNum = options?.limitCount || 50;
+    const limitNum = options?.limitCount || 2000;
 
     if (maxTimestamp > 0) {
       // Incremental delta sync: only request records created or modified after maxTimestamp
@@ -709,7 +715,7 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
 
     const snapshot: any = await Promise.race([
       getDocs(q),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
     ]);
 
     // If delta query returned nothing and we have local docs, return them immediately (0 quota wasted!)
@@ -796,11 +802,14 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
     const fallbackKey = `bizflow_${table}_v1`;
     const localStr = localStorage.getItem(localKey) || localStorage.getItem(fallbackKey);
     if (localStr) {
-      try { return JSON.parse(localStr); } catch (e) {}
+      try {
+        const parsed = JSON.parse(localStr);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
     }
     if (String(error).includes('offline')) return [];
     handleFirestoreError(error, OperationType.GET, table);
-    return null;
+    return [];
   }
 };
 
@@ -872,7 +881,7 @@ export const initRealtimeSyncListeners = () => {
       const tables = ['sales', 'settlements', 'expenses', 'customers', 'suppliers'];
       for (const table of tables) {
         try {
-          await fetchTableData(table, { limitCount: 50 }); // Fetch just recent changes
+          await fetchTableData(table, { limitCount: 200 }); // Fetch just recent changes
         } catch (e) {
           console.warn(`Auto-sync failed for ${table}:`, e);
         }

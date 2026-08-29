@@ -31,7 +31,7 @@ import {
   DeployTab
 } from './AdminTabs';
 import { motion, AnimatePresence } from 'motion/react';
-import { getUsers, saveUsers, SystemUser, getRepInventory, saveRepInventory, RepInventoryItem, getAttendanceRecords, saveAttendanceRecords, AttendanceRecord, getAIActionRequests, saveAIActionRequests, AIActionRequest, syncRepFromCloud, listenToRepInventory, listenToCloudChanges, syncAllFromCloud, getActiveOrgId, getOrganizationSettings, saveOrganizationSettings, OrganizationSettings, StaffAttendance, getStaffAttendance, saveStaffAttendance, getAdminInventory, getMainReturnStock, safeSetItem } from '../lib/store';
+import { getUsers, saveUsers, SystemUser, getRepInventory, saveRepInventory, RepInventoryItem, getAttendanceRecords, saveAttendanceRecords, AttendanceRecord, getAIActionRequests, saveAIActionRequests, AIActionRequest, syncRepFromCloud, listenToRepInventory, listenToCloudChanges, syncAllFromCloud, getActiveOrgId, getOrganizationSettings, saveOrganizationSettings, OrganizationSettings, StaffAttendance, getStaffAttendance, saveStaffAttendance, getAdminInventory, getMainReturnStock, getSuppliers, getCustomers, getSalesHistory } from '../lib/store';
 import { getSyncQueue, checkSupabaseConnection, processSyncQueue, addToSyncQueue, fetchTableData, broadcastSync } from '../lib/sync';
 import { appConfirm, appPrompt } from '../components/Dialogs';
 import { useLogo } from '../lib/logo';
@@ -104,14 +104,14 @@ export default function AdminDashboard() {
   const handleLangChange = () => {
     const newLang = lang === 'en' ? 'si' : 'en';
     setLang(newLang);
-    safeSetItem('bizflow_lang', newLang);
+    localStorage.setItem('bizflow_lang', newLang);
   };
   
   const t = useTranslation(lang);
   const [activeTab, setActiveTab] = useState('home');
   
   useEffect(() => {
-    safeSetItem('admin_active_tab', activeTab);
+    localStorage.setItem('admin_active_tab', activeTab);
   }, [activeTab]);
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -184,7 +184,7 @@ export default function AdminDashboard() {
         const newState = !isGhostMode;
         setIsGhostMode(newState);
         if (newState) {
-          safeSetItem('bizflow_ghost_until', (Date.now() + 4 * 60 * 60 * 1000).toString());
+          localStorage.setItem('bizflow_ghost_until', (Date.now() + 4 * 60 * 60 * 1000).toString());
         } else {
           localStorage.removeItem('bizflow_ghost_until');
         }
@@ -360,26 +360,8 @@ export default function AdminDashboard() {
   };
 
   const [globalItems, setGlobalItems] = useState<any[]>(() => getAdminInventory());
-  const [suppliers, setSuppliers] = useState<any[]>(() => {
-    const orgId = getActiveOrgId();
-    try {
-      const s = localStorage.getItem(`bizflow_${orgId}_suppliers_v1`) || 
-                localStorage.getItem(`bizflow_MYM-BIZFLOW_suppliers_v1`) || 
-                localStorage.getItem(`bizflow_default_suppliers_v1`) || 
-                localStorage.getItem('bizflow_suppliers_v1');
-      return s ? JSON.parse(s) : [];
-    } catch { return []; }
-  });
-  const [customers, setCustomers] = useState<any[]>(() => {
-    const orgId = getActiveOrgId();
-    try {
-      const s = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || 
-                localStorage.getItem(`bizflow_MYM-BIZFLOW_customers_v1`) || 
-                localStorage.getItem(`bizflow_default_customers_v1`) || 
-                localStorage.getItem('bizflow_customers_v1');
-      return s ? JSON.parse(s) : [];
-    } catch { return []; }
-  });
+  const [suppliers, setSuppliers] = useState<any[]>(() => getSuppliers());
+  const [customers, setCustomers] = useState<any[]>(() => getCustomers());
   const [returnStock, setReturnStock] = useState<any[]>(() => getMainReturnStock());
 
   useEffect(() => {
@@ -388,21 +370,11 @@ export default function AdminDashboard() {
       const inv = getAdminInventory();
       if (inv.length > 0) setGlobalItems(inv);
 
-      const storedSups = localStorage.getItem(`bizflow_${orgId}_suppliers_v1`) || 
-                         localStorage.getItem(`bizflow_MYM-BIZFLOW_suppliers_v1`) || 
-                         localStorage.getItem(`bizflow_default_suppliers_v1`) || 
-                         localStorage.getItem('bizflow_suppliers_v1');
-      if (storedSups) {
-        try { setSuppliers(JSON.parse(storedSups)); } catch (e) {}
-      }
+      const sups = getSuppliers();
+      if (sups.length > 0) setSuppliers(sups);
 
-      const storedCusts = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || 
-                          localStorage.getItem(`bizflow_MYM-BIZFLOW_customers_v1`) || 
-                          localStorage.getItem(`bizflow_default_customers_v1`) || 
-                          localStorage.getItem('bizflow_customers_v1');
-      if (storedCusts) {
-        try { setCustomers(JSON.parse(storedCusts)); } catch (e) {}
-      }
+      const custs = getCustomers();
+      if (custs.length > 0) setCustomers(custs);
 
       const ret = getMainReturnStock();
       if (ret.length > 0) setReturnStock(ret);
@@ -418,9 +390,9 @@ export default function AdminDashboard() {
             const data = await fetchTableData(table);
             if (data && data.length > 0) {
               setter(data);
-              safeSetItem(key, JSON.stringify(data));
-              safeSetItem(`bizflow_MYM-BIZFLOW_${table}_v1`, JSON.stringify(data));
-              safeSetItem(`bizflow_${table}_v1`, JSON.stringify(data));
+              localStorage.setItem(key, JSON.stringify(data));
+              localStorage.setItem(`bizflow_MYM-BIZFLOW_${table}_v1`, JSON.stringify(data));
+              localStorage.setItem(`bizflow_${table}_v1`, JSON.stringify(data));
             }
           } catch (err) {
             console.error(`Failed to fetch and sync table ${table}:`, err);
@@ -457,24 +429,43 @@ export default function AdminDashboard() {
     // Listen for real-time cloud sync events
     const handleSync = (e: any) => {
       const table = e.detail?.table;
+      const currentOrgId = getActiveOrgId();
+
       if (table === 'settings') {
         setOrgSettings(e.detail.data);
-      } else if (table === 'inventory') {
-        const stored = localStorage.getItem(`bizflow_${orgId}_admin_inventory_v1`) || localStorage.getItem('bizflow_admin_inventory_v1');
-        if (stored) setGlobalItems(JSON.parse(stored));
-      } else if (table === 'suppliers') {
-        const stored = localStorage.getItem(`bizflow_${orgId}_suppliers_v1`) || localStorage.getItem('bizflow_suppliers_v1');
-        if (stored) setSuppliers(JSON.parse(stored));
-      } else if (table === 'customers') {
-        const stored = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
-        if (stored) setCustomers(JSON.parse(stored));
-      } else if (table === 'main_return_stock') {
-        const stored = localStorage.getItem(`bizflow_${orgId}_main_return_stock_v1`) || localStorage.getItem('bizflow_main_return_stock_v1');
-        if (stored) setReturnStock(JSON.parse(stored));
-      } else if (table === 'sales') {
-        // Sales updated from cloud or rep
+      }
+      
+      if (!table || table === 'inventory' || table === 'all') {
+        const stored = getAdminInventory();
+        if (stored && stored.length > 0) setGlobalItems(stored);
+      }
+      
+      if (!table || table === 'suppliers' || table === 'all') {
+        const stored = localStorage.getItem(`bizflow_${currentOrgId}_suppliers_v1`) || localStorage.getItem('bizflow_suppliers_v1');
+        if (stored) {
+          try { setSuppliers(JSON.parse(stored)); } catch (err) {}
+        }
+      }
+      
+      if (!table || table === 'customers' || table === 'all') {
+        const stored = localStorage.getItem(`bizflow_${currentOrgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
+        if (stored) {
+          try { setCustomers(JSON.parse(stored)); } catch (err) {}
+        }
+      }
+      
+      if (!table || table === 'main_return_stock' || table === 'all') {
+        const stored = localStorage.getItem(`bizflow_${currentOrgId}_main_return_stock_v1`) || localStorage.getItem('bizflow_main_return_stock_v1');
+        if (stored) {
+          try { setReturnStock(JSON.parse(stored)); } catch (err) {}
+        }
+      }
+      
+      if (!table || table === 'sales' || table === 'all') {
         window.dispatchEvent(new CustomEvent('bizflow_sales_updated', { detail: e.detail }));
-      } else if (table === 'aiactions') {
+      }
+      
+      if (!table || table === 'aiactions' || table === 'all') {
         const reqs = getAIActionRequests();
         const pending = reqs.filter(r => r && r.status === 'Pending');
         setPendingRequests(pending);
@@ -501,16 +492,16 @@ export default function AdminDashboard() {
   const updateReturnStock = (newStock: any[], syncAction: 'insert' | 'update' | 'delete' = 'update', data?: any) => {
     const orgId = getActiveOrgId();
     setReturnStock(newStock);
-    safeSetItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(newStock));
-    safeSetItem(`bizflow_main_return_stock_v1`, JSON.stringify(newStock));
+    localStorage.setItem(`bizflow_${orgId}_main_return_stock_v1`, JSON.stringify(newStock));
+    localStorage.setItem(`bizflow_main_return_stock_v1`, JSON.stringify(newStock));
     if (data) addToSyncQueue({ table: 'main_return_stock', action: syncAction, data });
   };
 
   const updateGlobalItems = (newItems: any[], syncAction: 'insert' | 'update' | 'delete' = 'update', itemData?: any) => {
     const orgId = getActiveOrgId();
     setGlobalItems(newItems);
-    safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(newItems));
-    safeSetItem(`bizflow_admin_inventory_v1`, JSON.stringify(newItems));
+    localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(newItems));
+    localStorage.setItem(`bizflow_admin_inventory_v1`, JSON.stringify(newItems));
     if (itemData) addToSyncQueue({ table: 'inventory', action: syncAction, data: itemData });
     
     // Trigger real-time sync for other devices
@@ -526,16 +517,16 @@ export default function AdminDashboard() {
   const updateSuppliers = (newSups: any[], syncAction: 'insert' | 'update' | 'delete' = 'update', supData?: any) => {
     const orgId = getActiveOrgId();
     setSuppliers(newSups);
-    safeSetItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(newSups));
-    safeSetItem(`bizflow_suppliers_v1`, JSON.stringify(newSups));
+    localStorage.setItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(newSups));
+    localStorage.setItem(`bizflow_suppliers_v1`, JSON.stringify(newSups));
     if (supData) addToSyncQueue({ table: 'suppliers', action: syncAction, data: supData });
   };
 
   const updateCustomers = (newCusts: any[], syncAction: 'insert' | 'update' | 'delete' = 'update', custData?: any) => {
     const orgId = getActiveOrgId();
     setCustomers(newCusts);
-    safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(newCusts));
-    safeSetItem(`bizflow_customers_v1`, JSON.stringify(newCusts));
+    localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(newCusts));
+    localStorage.setItem(`bizflow_customers_v1`, JSON.stringify(newCusts));
     if (custData) addToSyncQueue({ table: 'customers', action: syncAction, data: custData });
   };
 
@@ -699,7 +690,7 @@ export default function AdminDashboard() {
     { 
       id: 'diagnostic', 
       label: 'Sync Diagnostic', 
-      icon: null, 
+      icon: <CloudCog size={32} />, 
       color: 'text-purple-600', 
       cardBg: 'from-purple-50/60 via-white to-purple-50/10', 
       borderColor: 'border-purple-100',
@@ -1305,8 +1296,8 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
       const data = await fetchTableData('sales');
       if (data && Array.isArray(data)) {
         setSalesHistory(data);
-        safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(data));
-        safeSetItem('bizflow_sales_v1', JSON.stringify(data));
+        localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(data));
+        localStorage.setItem('bizflow_sales_v1', JSON.stringify(data));
       }
     } catch (e) {}
   };
@@ -1351,8 +1342,8 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
 
     const updated = salesHistory.filter(s => String(s.id) !== String(targetId) && String(s.docId || '') !== String(targetId));
     setSalesHistory(updated);
-    safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(updated));
-    safeSetItem('bizflow_sales_v1', JSON.stringify(updated));
+    localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(updated));
+    localStorage.setItem('bizflow_sales_v1', JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('bizflow_sales_updated', { detail: { table: 'sales', data: updated } }));
     window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: updated } }));
   };
@@ -1643,8 +1634,8 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
       });
 
       const orgId = getActiveOrgId();
-      safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(newItems));
-      safeSetItem(`bizflow_admin_inventory_v1`, JSON.stringify(newItems));
+      localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(newItems));
+      localStorage.setItem(`bizflow_admin_inventory_v1`, JSON.stringify(newItems));
       
       if (saleData.customer && saleData.customer.trim()) {
         const trimmedCustName = saleData.customer.trim();
@@ -1678,9 +1669,9 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
         }
 
         setCustomers(updatedCustList);
-        safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(updatedCustList));
-        safeSetItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(updatedCustList));
-        safeSetItem('bizflow_customers_v1', JSON.stringify(updatedCustList));
+        localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(updatedCustList));
+        localStorage.setItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(updatedCustList));
+        localStorage.setItem('bizflow_customers_v1', JSON.stringify(updatedCustList));
         addToSyncQueue({ table: 'customers', action: custAction, data: syncedCustObj });
         window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'customers', data: updatedCustList } }));
       }
@@ -1702,8 +1693,8 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
       salesMap.set(String(saleData.id), saleData);
       const getEpoch = (s: any) => new Date(s.createdAt || s.date || 0).getTime();
       const newAllSales = Array.from(salesMap.values()).sort((a: any, b: any) => getEpoch(b) - getEpoch(a));
-      safeSetItem(`bizflow_${currentOrgId}_sales_v1`, JSON.stringify(newAllSales));
-      safeSetItem('bizflow_sales_v1', JSON.stringify(newAllSales));
+      localStorage.setItem(`bizflow_${currentOrgId}_sales_v1`, JSON.stringify(newAllSales));
+      localStorage.setItem('bizflow_sales_v1', JSON.stringify(newAllSales));
       window.dispatchEvent(new CustomEvent('bizflow_sales_updated', { detail: { table: 'sales', data: newAllSales } }));
       window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: newAllSales } }));
 
@@ -1741,9 +1732,9 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
           }
 
           setCustomers(updatedCustList);
-          safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(updatedCustList));
-          safeSetItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(updatedCustList));
-          safeSetItem('bizflow_customers_v1', JSON.stringify(updatedCustList));
+          localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(updatedCustList));
+          localStorage.setItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(updatedCustList));
+          localStorage.setItem('bizflow_customers_v1', JSON.stringify(updatedCustList));
           addToSyncQueue({ table: 'customers', action: custAction, data: syncedCustObj });
           window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'customers', data: updatedCustList } }));
         }
@@ -1765,8 +1756,8 @@ function InvoicingTab({ t, items, setItems, customers, setCustomers, repsList, o
         salesMap.set(String(saleData.id), saleData);
         const getEpoch = (s: any) => new Date(s.createdAt || s.date || 0).getTime();
         const newAllSales = Array.from(salesMap.values()).sort((a: any, b: any) => getEpoch(b) - getEpoch(a));
-        safeSetItem(`bizflow_${currentOrgId}_sales_v1`, JSON.stringify(newAllSales));
-        safeSetItem('bizflow_sales_v1', JSON.stringify(newAllSales));
+        localStorage.setItem(`bizflow_${currentOrgId}_sales_v1`, JSON.stringify(newAllSales));
+        localStorage.setItem('bizflow_sales_v1', JSON.stringify(newAllSales));
         window.dispatchEvent(new CustomEvent('bizflow_sales_updated', { detail: { table: 'sales', data: newAllSales } }));
         window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: newAllSales } }));
     }

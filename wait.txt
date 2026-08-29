@@ -1,0 +1,1 @@
+"I have added a script to automatically clear the cache and reload the application for you. Please refresh."

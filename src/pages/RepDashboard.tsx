@@ -10,7 +10,7 @@ import ThermalLogo from '../components/ThermalLogo';
 import { BillPreviewModal } from '../components/BillPreviewModal';
 import { BillPrintLayout } from '../components/BillPrintLayout';
 import { useLogo } from '../lib/logo';
-import { getRepInventory, saveRepInventory, SystemUser, getUsers, saveUsers, getAttendanceRecords, saveAttendanceRecords, AttendanceRecord, getAIActionRequests, saveAIActionRequests, AIActionRequest, syncRequestsFromCloud, listenToCloudChanges, listenToRepInventory, getActiveOrgId, getOrganizationSettings, getAdminInventory, saveAdminInventory, getMainReturnStock, saveMainReturnStock, getSettledDates, markDatesSettled, updateUserOnlineStatus } from '../lib/store';
+import { getRepInventory, saveRepInventory, SystemUser, getUsers, saveUsers, getAttendanceRecords, saveAttendanceRecords, AttendanceRecord, getAIActionRequests, saveAIActionRequests, AIActionRequest, syncRequestsFromCloud, listenToCloudChanges, listenToRepInventory, getActiveOrgId, getOrganizationSettings, getAdminInventory, saveAdminInventory, getMainReturnStock, saveMainReturnStock, getSettledDates, markDatesSettled, updateUserOnlineStatus, getCustomers, getSalesHistory } from '../lib/store';
 import { getSyncQueue, checkSupabaseConnection, processSyncQueue, addToSyncQueue, fetchTableData } from '../lib/sync';
 import { appConfirm, appPrompt } from '../components/Dialogs';
 import { isBiometricSupported, hasBiometricRegistered, registerBiometric, verifyBiometric, removeBiometric } from '../lib/biometrics';
@@ -681,18 +681,10 @@ export default function RepDashboard() {
         };
 
         const loadInitialData = () => {
-          // Load sales from local storage first
-          const orgId = getActiveOrgId();
-          const storedSalesStr = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
-          if (storedSalesStr) {
-            try {
-              const storedSales = JSON.parse(storedSalesStr);
-              const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
-              setSalesData(storedSales.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
-            } catch (e) {
-              console.error("Error parsing local sales data:", e);
-            }
-          }
+          // Load sales from local storage/defaults first
+          const storedSales = getSalesHistory();
+          const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
+          setSalesData(storedSales.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
 
           // Fetch sales for history from cloud
           fetchTableData('sales').then(data => {
@@ -707,23 +699,23 @@ export default function RepDashboard() {
             // CashBookTab reads from localStorage directly on render.
           });
 
-
           // Load Approval Requests
           setActionRequests(getAIActionRequests().filter(r => r.repId === freshRep.id && r.status !== 'Completed'));
           
           // Load Customers
-          const storedCusts = localStorage.getItem('bizflow_customers_v1');
-          if (storedCusts) setCustomers(JSON.parse(storedCusts));
+          const initialCusts = getCustomers();
+          setCustomers(initialCusts);
           fetchTableData('customers').then(data => {
             if (data && data.length > 0) {
               setCustomers(data);
+              const orgId = getActiveOrgId();
+              localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(data));
               localStorage.setItem('bizflow_customers_v1', JSON.stringify(data));
             }
           });
 
           // 1. Fetch Admin Global Inventory
-          const storedGlobal = localStorage.getItem('bizflow_admin_inventory_v1');
-          const globalItems = storedGlobal ? JSON.parse(storedGlobal) : [];
+          const globalItems = getAdminInventory();
           
           // 2. Fetch Rep specific stats
           const repStock = getRepInventory(storedRep.id);
@@ -734,10 +726,11 @@ export default function RepDashboard() {
           // Fetch fresh global inventory from cloud
           fetchTableData('inventory').then(gData => {
             if (gData && gData.length > 0) {
-              localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(gData));
-              const rStock = getRepInventory(storedRep.id);
-              setInventory(mergeStock(gData, rStock, freshRep.activeArea));
+              saveAdminInventory(gData);
             }
+            const gItems = getAdminInventory();
+            const rStock = getRepInventory(storedRep.id);
+            setInventory(mergeStock(gItems, rStock, freshRep.activeArea));
           });
 
           // Load Attendance
@@ -753,9 +746,39 @@ export default function RepDashboard() {
         loadInitialData();
 
         const handleSyncEvent = (e: any) => {
-          if (e.detail && e.detail.table === 'sales' && Array.isArray(e.detail.data)) {
-            const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
-            setSalesData(e.detail.data.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
+          const table = e.detail?.table;
+          const currentOrgId = getActiveOrgId();
+
+          if (!table || table === 'sales' || table === 'all') {
+            const storedSalesStr = localStorage.getItem(`bizflow_${currentOrgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
+            if (storedSalesStr) {
+              try {
+                const sData = JSON.parse(storedSalesStr);
+                if (Array.isArray(sData)) {
+                  const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
+                  setSalesData(sData.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
+                }
+              } catch (err) {}
+            } else if (e.detail?.data && Array.isArray(e.detail.data) && table === 'sales') {
+              const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
+              setSalesData(e.detail.data.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
+            }
+          }
+
+          if (!table || table === 'inventory' || table === 'all') {
+            const gItems = getAdminInventory();
+            const rStock = getRepInventory(freshRep.id);
+            setInventory(mergeStock(gItems, rStock, freshRep.activeArea));
+          }
+
+          if (!table || table === 'customers' || table === 'all') {
+            const storedCustStr = localStorage.getItem(`bizflow_${currentOrgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
+            if (storedCustStr) {
+              try {
+                const cData = JSON.parse(storedCustStr);
+                if (Array.isArray(cData)) setCustomers(cData);
+              } catch (err) {}
+            }
           }
         };
         window.addEventListener('bizflow_sync', handleSyncEvent);
