@@ -356,7 +356,7 @@ export default function AdminDashboard() {
     setSyncStatus({ checking: false, success: res.success, message: res.message });
     setTimeout(() => {
       setSyncStatus({ checking: false });
-    }, 5000);
+    }, 3000);
   };
 
   const [globalItems, setGlobalItems] = useState<any[]>(() => getAdminInventory());

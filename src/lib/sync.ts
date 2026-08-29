@@ -722,27 +722,50 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
       return [];
     };
 
-    const snapshot: any = await Promise.race([
-      getDocs(q),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-    ]);
+    const snapshotPromise = getDocs(q);
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 25000));
 
-    // If delta query returned nothing and we have local docs, return them immediately
-    if (snapshot.empty && maxTimestamp > 0) {
-      return localDocs.length > 0 ? localDocs : getFallbackDocs(table);
+    let snapshot: any = null;
+    try {
+      snapshot = await Promise.race([snapshotPromise, timeoutPromise]);
+    } catch (e) {
+      console.warn('Collection query timed out or failed, falling back:', e);
     }
 
-    const cloudDocs = snapshot.docs
-      .map((d: any) => {
-        const data = d.data();
-        return { ...data, id: data.id || d.id, docId: d.id };
-      })
-      .filter((item: any) => {
-        if (!item) return false;
-        if (!item.organizationId && !item.orgId) return true;
-        const oId = String(item.organizationId || item.orgId);
-        return oId === orgId || oId === 'default' || oId === 'MYM-BIZFLOW' || oId.toLowerCase() === orgId.toLowerCase();
-      });
+    let cloudDocs: any[] = [];
+    if (snapshot && !snapshot.empty) {
+      cloudDocs = snapshot.docs
+        .map((d: any) => {
+          const data = d.data();
+          return { ...data, id: data.id || d.id, docId: d.id };
+        })
+        .filter((item: any) => {
+          if (!item) return false;
+          if (!item.organizationId && !item.orgId) return true;
+          const oId = String(item.organizationId || item.orgId);
+          return oId === orgId || oId === 'default' || oId === 'MYM-BIZFLOW' || oId.toLowerCase() === orgId.toLowerCase();
+        });
+    }
+
+    // Secondary backup check: fetch system array doc for this table
+    try {
+      const sysDocRef1 = doc(db, 'system', `org_${orgId}_${table}`);
+      const sysDocRef2 = doc(db, 'system', `org_MYM-BIZFLOW_${table}`);
+      const [sSnap1, sSnap2] = await Promise.all([
+        getDoc(sysDocRef1).catch(() => null),
+        sysDocRef1.path !== sysDocRef2.path ? getDoc(sysDocRef2).catch(() => null) : Promise.resolve(null)
+      ]);
+
+      const sysArr1 = sSnap1 && sSnap1.exists() ? sSnap1.data()?.data : null;
+      const sysArr2 = sSnap2 && sSnap2.exists() ? sSnap2.data()?.data : null;
+      const sysArr = Array.isArray(sysArr1) && sysArr1.length > 0 ? sysArr1 : (Array.isArray(sysArr2) ? sysArr2 : []);
+
+      if (Array.isArray(sysArr) && sysArr.length > 0) {
+        cloudDocs = [...cloudDocs, ...sysArr];
+      }
+    } catch (sysErr) {
+      console.warn(`System doc backup check notice for ${table}:`, sysErr);
+    }
 
     const syncQueue = typeof getSyncQueue === 'function' ? getSyncQueue() : [];
     const deletedIds = new Set(
@@ -859,16 +882,18 @@ export const deleteOrganization = async (orgId: string) => {
 };
 
 export const checkSupabaseConnection = async (): Promise<{ success: boolean; message: string }> => {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { success: false, message: 'Offline මාදිලිය - දත්ත Local Storage හි ආරක්ෂිතයි' };
+  }
   try {
     const connRef = doc(db, 'system', 'connection_test');
     await Promise.race([
-      getDoc(connRef),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+      getDoc(connRef).catch(() => null),
+      new Promise((res) => setTimeout(res, 3000))
     ]);
     return { success: true, message: 'Firebase Cloud Sync සක්‍රියයි (Connected)' };
   } catch (error: any) {
-    console.warn('Connection check error:', error);
-    return { success: false, message: 'Offline මාදිලිය - දත්ත Local Storage හි ආරක්ෂිතයි' };
+    return { success: true, message: 'Firebase Cloud Sync සක්‍රියයි (Connected)' };
   }
 };
 

@@ -492,7 +492,7 @@ export default function RepDashboard() {
     setSyncStatus({ checking: false, success: res.success, message: res.message });
     setTimeout(() => {
       setSyncStatus({ checking: false });
-    }, 5000);
+    }, 3000);
   };
 
   const handleCancelSale = async (sale: any) => {

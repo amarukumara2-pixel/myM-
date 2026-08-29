@@ -2225,7 +2225,13 @@ export const syncAllFromCloud = async () => {
     
     // 2. Fetch single targeted system doc for users
     try {
-      const uDoc = await getDoc(doc(db, 'system', `org_${orgId}_users`));
+      let uDoc = await getDoc(doc(db, 'system', `org_${orgId}_users`));
+      if (!uDoc.exists() && orgId !== 'MYM-BIZFLOW') {
+        uDoc = await getDoc(doc(db, 'system', `org_MYM-BIZFLOW_users`));
+      }
+      if (!uDoc.exists() && orgId !== 'default') {
+        uDoc = await getDoc(doc(db, 'system', `org_default_users`));
+      }
       if (uDoc.exists() && uDoc.data()?.data) {
         const arr = uDoc.data().data;
         if (Array.isArray(arr) && arr.length > 0) {
@@ -2290,15 +2296,27 @@ export const syncAllFromCloud = async () => {
     } catch (e) {}
 
     // 8. Delta-sync essential collections (only fetch new or modified records)
-    const [sales, settlements, expenses, customers, suppliers, returnStock, invColData] = await Promise.all([
-      fetchTableData('sales', { limitCount: 200 }),
-      fetchTableData('settlements', { limitCount: 200 }),
-      fetchTableData('expenses', { limitCount: 200 }),
-      fetchTableData('customers', { limitCount: 200 }),
-      fetchTableData('suppliers', { limitCount: 200 }),
-      fetchTableData('main_return_stock', { limitCount: 200 }),
-      fetchTableData('inventory', { limitCount: 200 })
+    const [sales, settlements, expenses, customers, suppliers, returnStock, invColData, userColData] = await Promise.all([
+      fetchTableData('sales', { limitCount: 500 }),
+      fetchTableData('settlements', { limitCount: 500 }),
+      fetchTableData('expenses', { limitCount: 500 }),
+      fetchTableData('customers', { limitCount: 500 }),
+      fetchTableData('suppliers', { limitCount: 500 }),
+      fetchTableData('main_return_stock', { limitCount: 500 }),
+      fetchTableData('inventory', { limitCount: 500 }),
+      fetchTableData('users', { limitCount: 200 })
     ]);
+
+    if (Array.isArray(userColData) && userColData.length > 0) {
+      const currentUsers = getUsers();
+      const userMap = new Map<string, SystemUser>();
+      currentUsers.forEach(u => userMap.set(u.id, u));
+      userColData.forEach((u: any) => {
+        if (u && u.id) userMap.set(u.id, u);
+      });
+      const mergedUsers = Array.from(userMap.values());
+      saveUsers(mergedUsers);
+    }
 
     if (Array.isArray(invColData) && invColData.length > 0) {
       const existing = getAdminInventory();
