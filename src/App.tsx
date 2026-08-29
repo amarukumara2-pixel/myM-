@@ -506,8 +506,23 @@ export default function App() {
 
     // Reconnect is the only automatic network trigger. Focus, visibility and
     // periodic polling caused unnecessary reads whenever the phone woke up.
+    // Trigger initial background push for any unsynced local data
+    import('./lib/sync').then(({ pushUnsyncedLocalDataToCloud }) => {
+      pushUnsyncedLocalDataToCloud().catch(() => null);
+    });
+
+    const handleLocalDataSync = () => {
+      import('./lib/sync').then(({ pushUnsyncedLocalDataToCloud }) => {
+        pushUnsyncedLocalDataToCloud().catch(() => null);
+      });
+    };
+
     window.addEventListener('online', triggerSyncQueue);
-    return () => window.removeEventListener('online', triggerSyncQueue);
+    window.addEventListener('bizflow_sync', handleLocalDataSync);
+    return () => {
+      window.removeEventListener('online', triggerSyncQueue);
+      window.removeEventListener('bizflow_sync', handleLocalDataSync);
+    };
   }, []);
 
   return (

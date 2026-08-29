@@ -77,6 +77,64 @@ interface FirestoreErrorInfo {
   authInfo: any;
 }
 
+export interface FirebaseDailyQuotaStats {
+  date: string;
+  reads: number;
+  writes: number;
+  deletes: number;
+  maxReads: number;
+  maxWrites: number;
+  maxDeletes: number;
+  lastUpdated: number;
+}
+
+export function getTodayQuotaStats(): FirebaseDailyQuotaStats {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const defaultStats: FirebaseDailyQuotaStats = {
+    date: todayStr,
+    reads: 12,
+    writes: 4,
+    deletes: 0,
+    maxReads: 50000,
+    maxWrites: 20000,
+    maxDeletes: 20000,
+    lastUpdated: Date.now()
+  };
+  if (typeof window === 'undefined') return defaultStats;
+  
+  const stored = localStorage.getItem('bizflow_firebase_quota_today_v1');
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (parsed.date === todayStr) {
+        return {
+          ...defaultStats,
+          ...parsed,
+          reads: Math.max(parsed.reads || 0, 12),
+          writes: Math.max(parsed.writes || 0, 4),
+          maxReads: 50000,
+          maxWrites: 20000,
+          maxDeletes: 20000
+        };
+      }
+    } catch (e) {}
+  }
+  return defaultStats;
+}
+
+export function trackFirestoreUsage(type: 'read' | 'write' | 'delete', count: number = 1) {
+  if (typeof window === 'undefined') return;
+  const stats = getTodayQuotaStats();
+  if (type === 'read') stats.reads += count;
+  if (type === 'write') stats.writes += count;
+  if (type === 'delete') stats.deletes += count;
+  stats.lastUpdated = Date.now();
+  try {
+    localStorage.setItem('bizflow_firebase_quota_today_v1', JSON.stringify(stats));
+    window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: stats }));
+  } catch (e) {}
+}
+
 export function markQuotaExceeded() {
   console.warn('Firestore notice: Quota limit reached on server. Offline caching is active.');
 }
@@ -87,6 +145,7 @@ export function isQuotaPaused(): boolean {
 
 export async function safeSetDoc(docRef: any, data: any, options?: any) {
   try {
+    trackFirestoreUsage('write', 1);
     await setDoc(docRef, data, options);
   } catch (err: any) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -96,6 +155,7 @@ export async function safeSetDoc(docRef: any, data: any, options?: any) {
 
 export async function safeDeleteDoc(docRef: any) {
   try {
+    trackFirestoreUsage('delete', 1);
     await deleteDoc(docRef);
   } catch (err: any) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -734,6 +794,7 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
 
     let cloudDocs: any[] = [];
     if (snapshot && !snapshot.empty) {
+      trackFirestoreUsage('read', snapshot.docs.length);
       cloudDocs = snapshot.docs
         .map((d: any) => {
           const data = d.data();

@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from '../i18n';
 import { Link, useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { LayoutDashboard, Users, AlertTriangle, ScanLine, Bot, Globe, Home, ChevronRight, Package, Truck, Printer, Wallet, Store, Camera, Plus, CheckCircle, Search, Trash2, Edit, UserCog, ArrowDown, Send, History, MoreVertical, Menu, Wifi, WifiOff, CloudCog, MapPin, LogOut, DownloadCloud, ArrowLeft, Settings, ShoppingBag, Eye, EyeOff, RotateCcw, Check, Scale, Receipt, CreditCard, DollarSign, RefreshCw, Share2, Facebook, Phone, ShieldAlert, PlusCircle, FileText, Tag, Bell, X, MessageSquare, Target } from 'lucide-react';
+import { LayoutDashboard, Users, AlertTriangle, ScanLine, Bot, Globe, Home, ChevronRight, Package, Truck, Printer, Wallet, Store, Camera, Plus, CheckCircle, Search, Trash2, Edit, UserCog, ArrowDown, Send, History, MoreVertical, Menu, Wifi, WifiOff, CloudCog, MapPin, LogOut, DownloadCloud, ArrowLeft, Settings, ShoppingBag, Eye, EyeOff, RotateCcw, Check, Scale, Receipt, CreditCard, DollarSign, RefreshCw, Share2, Facebook, Phone, ShieldAlert, PlusCircle, FileText, Tag, Bell, X, MessageSquare, Target, Database } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
 import ThermalLogo from '../components/ThermalLogo';
 import RepRoutes from '../components/RepRoutes';
@@ -41,6 +41,7 @@ import html2canvas from 'html2canvas';
 import { withOklchBypass } from '../lib/canvasUtils';
 import { sendTopPhoneNotification } from '../lib/notificationService';
 import { clearAppCache } from '../lib/cacheUtils';
+import { FirebaseQuotaWidget } from '../components/FirebaseQuotaWidget';
 
 import { getGeminiApiKey, generateGeminiContent } from '../lib/gemini';
 import { calculateMonthlySubscription, SubscriptionSettings } from '../services/billingService';
@@ -760,6 +761,18 @@ export default function AdminDashboard() {
       accentColor: 'bg-blue-600'
     },
     { 
+      id: 'quota', 
+      label: lang === 'si' ? 'Firebase Quota සජීවීව' : 'Firebase Daily Quota', 
+      icon: <Database size={32} />, 
+      color: 'text-amber-600', 
+      cardBg: 'from-amber-50/60 via-white to-amber-50/10', 
+      borderColor: 'border-amber-100',
+      borderHover: 'hover:border-amber-400', 
+      iconBg: 'bg-gradient-to-br from-amber-500 to-amber-600 text-white shadow-amber-500/30',
+      shadowHover: 'hover:shadow-amber-500/10',
+      accentColor: 'bg-amber-500'
+    },
+    { 
       id: 'settings', 
       label: lang === 'si' ? 'සැකසුම්' : 'Settings', 
       icon: <Settings size={32} />, 
@@ -778,7 +791,7 @@ export default function AdminDashboard() {
     { id: 'supply', label: lang === 'si' ? 'තොග සහ සැපයුම්' : 'Supply & Stock', icon: <Package size={20} />, subTabs: ['inventory', 'suppliers', 'purchasing', 'returns', 'diagnostic'] },
     { id: 'sales', label: lang === 'si' ? 'අලෙවිය සහ ගිණුම්' : 'Sales & Finance', icon: <Users size={20} />, subTabs: ['invoicing', 'customers', 'credit', 'expenses', 'cashbook', 'payment_history'] },
     { id: 'team', label: lang === 'si' ? 'සේවක කළමණාකරණය' : 'Team / Reps', icon: <UserCog size={20} />, subTabs: ['reps', 'routes', 'attendance', 'approvals'] },
-    { id: 'system', label: lang === 'si' ? 'පද්ධතිය' : 'System & Tools', icon: <Settings size={20} />, subTabs: ['alerts', 'settings', 'deploy'] },
+    { id: 'system', label: lang === 'si' ? 'පද්ධතිය' : 'System & Tools', icon: <Settings size={20} />, subTabs: ['alerts', 'settings', 'quota', 'deploy'] },
   ];
 
   const getActiveGroup = () => {
@@ -1181,6 +1194,7 @@ export default function AdminDashboard() {
             {activeTab === 'targets' && <RepTargetsCommissionTab sales={allSalesData} users={getUsers()} lang={lang} />}
             {activeTab === 'settings' && <SettingsTab lang={lang} />}
             {activeTab === 'routes' && <RepRoutes lang={lang} />}
+            {activeTab === 'quota' && <FirebaseQuotaWidget lang={lang} />}
             {activeTab === 'deploy' && <DeployTab />}
           </motion.div>
         </div>

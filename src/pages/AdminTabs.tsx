@@ -22,6 +22,7 @@ import { fetchTableData, addToSyncQueue } from '../lib/sync';
 import { sendTopPhoneNotification } from '../lib/notificationService';
 import { DailySettlementsTab } from '../components/DailySettlementsTab';
 import { getNetworkSignalLogs, NetworkSignalLog } from '../lib/networkLogger';
+import { FirebaseQuotaWidget } from '../components/FirebaseQuotaWidget';
 
 // --- 1. OVERVIEW TAB ---
 export function OverviewTab({ repsList, isGhostMode }: { repsList: any[], isGhostMode: boolean }) {
@@ -407,6 +408,8 @@ export function OverviewTab({ repsList, isGhostMode }: { repsList: any[], isGhos
           </div>
         </div>
       )}
+
+      <FirebaseQuotaWidget compact={true} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div 
@@ -5268,6 +5271,8 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6 pb-20">
+      <FirebaseQuotaWidget lang={lang} />
+
       <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950 text-white p-6 rounded-3xl shadow-xl space-y-6 border border-emerald-500/20">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">

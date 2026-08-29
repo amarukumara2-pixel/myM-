@@ -2141,6 +2141,51 @@ export const getSalesHistory = (): any[] => {
   return [];
 };
 
+export const saveCustomers = (customers: any[]) => {
+  const orgId = getActiveOrgId();
+  safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(customers));
+  safeSetItem(`bizflow_MYM-BIZFLOW_customers_v1`, JSON.stringify(customers));
+  safeSetItem('bizflow_customers_v1', JSON.stringify(customers));
+  Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc, autoSyncUnsyncedData} ]) => {
+    safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), { 
+      data: customers,
+      organizationId: orgId,
+      updatedAt: Date.now()
+    }, { merge: true });
+    autoSyncUnsyncedData();
+  });
+};
+
+export const saveSuppliers = (suppliers: any[]) => {
+  const orgId = getActiveOrgId();
+  safeSetItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(suppliers));
+  safeSetItem(`bizflow_MYM-BIZFLOW_suppliers_v1`, JSON.stringify(suppliers));
+  safeSetItem('bizflow_suppliers_v1', JSON.stringify(suppliers));
+  Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc, autoSyncUnsyncedData} ]) => {
+    safeSetDoc(doc(db, 'system', `org_${orgId}_suppliers`), { 
+      data: suppliers,
+      organizationId: orgId,
+      updatedAt: Date.now()
+    }, { merge: true });
+    autoSyncUnsyncedData();
+  });
+};
+
+export const saveSalesHistory = (sales: any[]) => {
+  const orgId = getActiveOrgId();
+  safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(sales));
+  safeSetItem(`bizflow_MYM-BIZFLOW_sales_v1`, JSON.stringify(sales));
+  safeSetItem('bizflow_sales_v1', JSON.stringify(sales));
+  Promise.all([import('firebase/firestore'), import('./sync')]).then(([ {doc}, {db, safeSetDoc, autoSyncUnsyncedData} ]) => {
+    safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), { 
+      data: sales,
+      organizationId: orgId,
+      updatedAt: Date.now()
+    }, { merge: true });
+    autoSyncUnsyncedData();
+  });
+};
+
 export const saveAdminInventory = (inventory: any[]) => {
   const orgId = getActiveOrgId();
   safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(inventory));
