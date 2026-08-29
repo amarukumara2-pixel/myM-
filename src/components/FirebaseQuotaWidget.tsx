@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Activity, Zap, CheckCircle, RefreshCw, Server, AlertCircle, ShieldCheck, Flame } from 'lucide-react';
-import { getTodayQuotaStats, trackFirestoreUsage, FirebaseDailyQuotaStats } from '../lib/sync';
+import { Database, Activity, Zap, CheckCircle, RefreshCw, Server, AlertCircle, ShieldCheck, Flame, CloudLightning } from 'lucide-react';
+import { getTodayQuotaStats, trackFirestoreUsage, FirebaseDailyQuotaStats, forceUploadAllToCloud, fetchLiveQuotaStatsFromCloud } from '../lib/sync';
 
 interface Props {
   lang?: 'si' | 'en';
@@ -11,12 +11,17 @@ export const FirebaseQuotaWidget: React.FC<Props> = ({ lang = 'si', compact = fa
   const [stats, setStats] = useState<FirebaseDailyQuotaStats>(getTodayQuotaStats());
   const [ping, setPing] = useState<number | null>(24);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [dbSizeKB, setDbSizeKB] = useState<number>(180);
 
-  const refreshData = () => {
+  const refreshData = async () => {
     setIsRefreshing(true);
-    const updated = getTodayQuotaStats();
-    setStats(updated);
+    try {
+      const liveCloudStats = await fetchLiveQuotaStatsFromCloud();
+      setStats(liveCloudStats);
+    } catch (e) {
+      setStats(getTodayQuotaStats());
+    }
 
     // Calculate approximate size of localStorage
     let totalBytes = 0;
@@ -35,6 +40,24 @@ export const FirebaseQuotaWidget: React.FC<Props> = ({ lang = 'si', compact = fa
     setTimeout(() => {
       setIsRefreshing(false);
     }, 400);
+  };
+
+  const handleSyncAllNow = async () => {
+    setIsSyncingAll(true);
+    try {
+      const res = await forceUploadAllToCloud();
+      refreshData();
+      if (res.success) {
+        alert(lang === 'si' 
+          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Firebase Cloud වෙත සුරක්ෂිතව Upload කරන ලදී.`
+          : `Success! ${res.salesCount} bills, ${res.customersCount} customers, and ${res.inventoryCount} items synced to Firebase.`
+        );
+      }
+    } catch (e) {
+      alert(lang === 'si' ? 'Sync කිරීමේදී දෝෂයක් ඇති විය.' : 'Error during sync.');
+    } finally {
+      setIsSyncingAll(false);
+    }
   };
 
   useEffect(() => {
@@ -286,13 +309,25 @@ export const FirebaseQuotaWidget: React.FC<Props> = ({ lang = 'si', compact = fa
             : 'Your business runs 100% free forever within Google Firebase Spark quotas.'}
         </p>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+          <button
+            onClick={handleSyncAllNow}
+            disabled={isSyncingAll}
+            className="px-3 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded-xl font-medium transition active:scale-95 text-xs flex items-center gap-1.5"
+            title={lang === 'si' ? 'සියලුම දත්ත Cloud එකට Sync කරන්න' : 'Sync All Data to Cloud'}
+          >
+            <CloudLightning size={14} className={isSyncingAll ? 'animate-bounce text-emerald-400' : 'text-emerald-400'} />
+            {isSyncingAll 
+              ? (lang === 'si' ? 'Sync වෙමින්...' : 'Syncing...') 
+              : (lang === 'si' ? 'දැන්ම Sync කරන්න (Sync All)' : 'Sync All to Cloud')}
+          </button>
+
           <button
             onClick={handleTestOperation}
             className="px-3 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 rounded-xl font-medium transition active:scale-95 text-xs flex items-center gap-1.5"
           >
             <Zap size={14} />
-            {lang === 'si' ? 'පරීක්ෂා කරන්න (Test Live Read/Write)' : 'Test Read/Write'}
+            {lang === 'si' ? 'පරීක්ෂා කරන්න' : 'Test Read/Write'}
           </button>
 
           <button

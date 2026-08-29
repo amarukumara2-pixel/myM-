@@ -14,11 +14,12 @@ import {
   getAttendanceRecords, saveAttendanceRecords, getAIActionRequests, saveAIActionRequests, 
   getAdminInventory, saveAdminInventory, getMainReturnStock, saveMainReturnStock, 
   getOrganizationSettings, saveOrganizationSettings, OrganizationSettings, AIActionRequest, deleteSystemUser,
-  formatLastOnline, purgeAppCache, getStorageUsageKB, recalculateCustomerDebtChain, persistSalesAndCustomers
+  formatLastOnline, purgeAppCache, getStorageUsageKB, recalculateCustomerDebtChain, persistSalesAndCustomers,
+  getSalesHistory, getCustomers
 } from '../lib/store';
 import { generateGeminiContent } from '../lib/gemini';
 import { formatSinhalaDate } from '../i18n';
-import { fetchTableData, addToSyncQueue } from '../lib/sync';
+import { fetchTableData, addToSyncQueue, forceUploadAllToCloud } from '../lib/sync';
 import { sendTopPhoneNotification } from '../lib/notificationService';
 import { DailySettlementsTab } from '../components/DailySettlementsTab';
 import { getNetworkSignalLogs, NetworkSignalLog } from '../lib/networkLogger';
@@ -5234,9 +5235,45 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
   };
 
   const orgId = getActiveOrgId();
-  const salesStr = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1') || '[]';
-  let sales: any[] = [];
-  try { sales = JSON.parse(salesStr); } catch(e) {}
+  const [sales, setSales] = useState<any[]>(() => getSalesHistory());
+  const [customers, setCustomers] = useState<any[]>(() => getCustomers());
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleSync = () => {
+      setSales(getSalesHistory());
+      setCustomers(getCustomers());
+    };
+    window.addEventListener('bizflow_sync', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('bizflow_sync', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
+
+  const handleForceSyncAll = async () => {
+    setIsCloudSyncing(true);
+    setSyncFeedback(null);
+    try {
+      const res = await forceUploadAllToCloud();
+      setSales(getSalesHistory());
+      setCustomers(getCustomers());
+      if (res.success) {
+        setSyncFeedback(lang === 'si' 
+          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Firebase Cloud වෙත සාර්ථකව Sync කරන ලදී!`
+          : `Success! ${res.salesCount} bills, ${res.customersCount} customers, and ${res.inventoryCount} items synced to Firebase Cloud!`
+        );
+      } else {
+        setSyncFeedback(lang === 'si' ? 'Sync කිරීමේදී දෝෂයක් ඇති විය. අන්තර්ජාල සම්බන්ධතාව පරීක්ෂා කරන්න.' : 'Error during sync. Please check internet connection.');
+      }
+    } catch (e) {
+      setSyncFeedback(lang === 'si' ? 'Sync කිරීමේදී දෝෂයක් ඇති විය.' : 'Error during sync.');
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
 
   const yearBreakdown: { [year: string]: { count: number, sizeBytes: number } } = {};
   sales.forEach(s => {
@@ -5279,10 +5316,10 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
       });
 
       localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(kept));
-      localStorage.setItem(`bizflow_sales_v1`, JSON.stringify(kept));
+      localStorage.setItem('bizflow_sales_v1', JSON.stringify(kept));
+      setSales(kept);
       window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: kept } }));
       alert(lang === 'si' ? `සාර්ථකව පැරණි බිල් ${removedCount}ක් ඉවත් කරන ලදී!` : `Successfully removed ${removedCount} old bills!`);
-      window.location.reload();
     }
   };
 
@@ -5306,13 +5343,48 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 bg-white/5 p-4 rounded-2xl border border-white/10">
+        {/* Quick Sync Action Button */}
+        <div className="bg-emerald-500/10 border border-emerald-500/30 p-4 rounded-2xl space-y-2">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+                <CloudLightning size={16} className="text-emerald-400" />
+                {lang === 'si' ? 'Firebase Cloud සමග සෘජුව Sync කරන්න' : 'Direct Firebase Cloud Sync'}
+              </h4>
+              <p className="text-xs text-slate-300">
+                {lang === 'si' ? 'සියලුම පරණ හා අලුත් බිල්පත්, පාරිභෝගිකයින් හා භාණ්ඩ Firebase දත්ත ගබඩාවට යවන්න' : 'Push all local sales bills, customers & items directly to Firebase'}
+              </p>
+            </div>
+            <button
+              onClick={handleForceSyncAll}
+              disabled={isCloudSyncing}
+              className="w-full sm:w-auto px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-emerald-500/20"
+            >
+              <RefreshCw size={14} className={isCloudSyncing ? 'animate-spin' : ''} />
+              {isCloudSyncing 
+                ? (lang === 'si' ? 'දත්ත Sync වෙමින්...' : 'Syncing Data...') 
+                : (lang === 'si' ? 'දැන්ම Sync කරන්න (Sync All)' : 'Sync All to Cloud')}
+            </button>
+          </div>
+          {syncFeedback && (
+            <div className="mt-2 text-xs font-medium text-emerald-300 bg-emerald-950/60 p-2.5 rounded-xl border border-emerald-500/30 flex items-center gap-2">
+              <Check size={14} className="text-emerald-400 flex-shrink-0" />
+              <span>{syncFeedback}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-white/5 p-4 rounded-2xl border border-white/10">
           <div>
-            <span className="text-xs text-slate-400 uppercase tracking-wider">{lang === 'si' ? 'මුළු බිල් / වාර්තා ගණන' : 'Total Bills / Records'}</span>
+            <span className="text-xs text-slate-400 uppercase tracking-wider">{lang === 'si' ? 'මුළු බිල්පත්' : 'Total Bills'}</span>
             <h4 className="text-2xl font-black font-mono mt-0.5 text-white">{sales.length}</h4>
           </div>
           <div>
-            <span className="text-xs text-slate-400 uppercase tracking-wider">{lang === 'si' ? 'භාවිත වන ඉඩ ප්‍රමාණය' : 'Estimated Size'}</span>
+            <span className="text-xs text-slate-400 uppercase tracking-wider">{lang === 'si' ? 'පාරිභෝගිකයින්' : 'Customers'}</span>
+            <h4 className="text-2xl font-black font-mono mt-0.5 text-blue-300">{customers.length}</h4>
+          </div>
+          <div className="col-span-2 sm:col-span-1">
+            <span className="text-xs text-slate-400 uppercase tracking-wider">{lang === 'si' ? 'භාවිත ඉඩ' : 'Estimated Size'}</span>
             <h4 className="text-2xl font-black font-mono mt-0.5 text-emerald-400">{totalSalesKB} KB</h4>
           </div>
         </div>

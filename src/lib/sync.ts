@@ -15,7 +15,8 @@ import {
   where,
   disableNetwork,
   enableNetwork,
-  setLogLevel
+  setLogLevel,
+  increment
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -122,17 +123,95 @@ export function getTodayQuotaStats(): FirebaseDailyQuotaStats {
   return defaultStats;
 }
 
+let pendingQuotaUpdates = { reads: 0, writes: 0, deletes: 0 };
+let quotaFlushTimer: any = null;
+
+const flushQuotaToCloud = async () => {
+  if (typeof window === 'undefined' || !navigator.onLine) return;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const { reads, writes, deletes } = pendingQuotaUpdates;
+  if (reads === 0 && writes === 0 && deletes === 0) return;
+
+  // Reset batch
+  pendingQuotaUpdates = { reads: 0, writes: 0, deletes: 0 };
+
+  try {
+    const localStats = getTodayQuotaStats();
+    await setDoc(doc(db, 'system', `quota_daily_${todayStr}`), {
+      date: todayStr,
+      reads: increment(reads),
+      writes: increment(writes),
+      deletes: increment(deletes),
+      lastLocalSampleReads: localStats.reads,
+      lastLocalSampleWrites: localStats.writes,
+      updatedAt: Date.now()
+    }, { merge: true });
+  } catch (e) {
+    // Ignore offline quota syncing errors
+  }
+};
+
 export function trackFirestoreUsage(type: 'read' | 'write' | 'delete', count: number = 1) {
   if (typeof window === 'undefined') return;
   const stats = getTodayQuotaStats();
-  if (type === 'read') stats.reads += count;
-  if (type === 'write') stats.writes += count;
-  if (type === 'delete') stats.deletes += count;
+  if (type === 'read') {
+    stats.reads += count;
+    pendingQuotaUpdates.reads += count;
+  }
+  if (type === 'write') {
+    stats.writes += count;
+    pendingQuotaUpdates.writes += count;
+  }
+  if (type === 'delete') {
+    stats.deletes += count;
+    pendingQuotaUpdates.deletes += count;
+  }
   stats.lastUpdated = Date.now();
   try {
     localStorage.setItem('bizflow_firebase_quota_today_v1', JSON.stringify(stats));
     window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: stats }));
   } catch (e) {}
+
+  if (quotaFlushTimer) clearTimeout(quotaFlushTimer);
+  quotaFlushTimer = setTimeout(flushQuotaToCloud, 2000);
+}
+
+export async function fetchLiveQuotaStatsFromCloud(): Promise<FirebaseDailyQuotaStats> {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const currentLocal = getTodayQuotaStats();
+  if (typeof window === 'undefined' || !navigator.onLine) return currentLocal;
+
+  try {
+    const snap = await getDoc(doc(db, 'system', `quota_daily_${todayStr}`));
+    if (snap.exists()) {
+      const data = snap.data();
+      const mergedStats: FirebaseDailyQuotaStats = {
+        date: todayStr,
+        reads: Math.max(Number(data.reads || 0), currentLocal.reads, 12),
+        writes: Math.max(Number(data.writes || 0), currentLocal.writes, 12),
+        deletes: Math.max(Number(data.deletes || 0), currentLocal.deletes, 0),
+        maxReads: 50000,
+        maxWrites: 20000,
+        maxDeletes: 20000,
+        lastUpdated: Date.now()
+      };
+      localStorage.setItem('bizflow_firebase_quota_today_v1', JSON.stringify(mergedStats));
+      window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: mergedStats }));
+      return mergedStats;
+    } else {
+      // Seed the cloud quota document with current stats
+      await setDoc(doc(db, 'system', `quota_daily_${todayStr}`), {
+        date: todayStr,
+        reads: currentLocal.reads,
+        writes: currentLocal.writes,
+        deletes: currentLocal.deletes,
+        updatedAt: Date.now()
+      }, { merge: true });
+    }
+  } catch (e) {
+    console.warn('Live cloud quota fetch notice:', e);
+  }
+  return currentLocal;
 }
 
 export function markQuotaExceeded() {
@@ -518,9 +597,8 @@ export const triggerAutoSyncDebounced = (delayMs: number = 800) => {
 let isAutoSyncing = false;
 
 /**
- * Sweeps all local storage records (sales, settlements, expenses, customers, attendance)
- * and uploads any records whose fingerprint hasn't been synced to Firestore yet.
- * Exactly 1 write per modified/new record, 0 writes for already synced records.
+ * Sweeps all local storage records (sales, settlements, expenses, customers, inventory, suppliers, attendance)
+ * and uploads any records to Firestore collections and system documents.
  */
 export const autoSyncUnsyncedData = async () => {
   if (typeof window === 'undefined' || !navigator.onLine || isQuotaPaused() || isAutoSyncing) return;
@@ -533,34 +611,94 @@ export const autoSyncUnsyncedData = async () => {
 
     // 2. Scan and upload unsynced Sales
     try {
-      const salesRaw = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
-      if (salesRaw) {
-        const salesList = JSON.parse(salesRaw);
-        if (Array.isArray(salesList)) {
-          let hasUpdatedSales = false;
-          for (const s of salesList) {
-            if (!s || !s.id) continue;
-            if (!isRecordSynced('sales', s.id, s)) {
-              const cleanS = { ...s, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
-              await safeSetDoc(doc(db, 'sales', String(s.id)), cleanS, { merge: true });
-              markRecordSynced('sales', s.id, cleanS);
-              s.synced = true;
-              s.syncedAt = Date.now();
-              hasUpdatedSales = true;
-            }
+      const salesList = getSalesHistory();
+      if (Array.isArray(salesList) && salesList.length > 0) {
+        let hasUpdatedSales = false;
+        for (const s of salesList) {
+          if (!s || (!s.id && !s.billNo)) continue;
+          const sId = String(s.id || s.billNo);
+          if (!isRecordSynced('sales', sId, s)) {
+            const cleanS = { ...s, id: sId, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
+            await safeSetDoc(doc(db, 'sales', sId), cleanS, { merge: true });
+            markRecordSynced('sales', sId, cleanS);
+            s.synced = true;
+            s.syncedAt = Date.now();
+            hasUpdatedSales = true;
           }
-          if (hasUpdatedSales) {
-            localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(salesList));
-            localStorage.setItem('bizflow_sales_v1', JSON.stringify(salesList));
-            broadcastSync('sales', salesList);
-          }
+        }
+        // Save organization summary doc as well
+        await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
+          data: salesList,
+          organizationId: orgId,
+          updatedAt: Date.now()
+        }, { merge: true });
+
+        if (hasUpdatedSales) {
+          localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(salesList));
+          localStorage.setItem('bizflow_sales_v1', JSON.stringify(salesList));
+          broadcastSync('sales', salesList);
         }
       }
     } catch (e) {
       console.warn('Auto-sync sales notice:', e);
     }
 
-    // 3. Scan and upload unsynced Settlements
+    // 3. Scan and upload Customers
+    try {
+      const custList = getCustomers();
+      if (Array.isArray(custList) && custList.length > 0) {
+        let hasUpdatedCust = false;
+        for (const c of custList) {
+          if (!c || !c.id) continue;
+          if (!isRecordSynced('customers', c.id, c)) {
+            const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
+            await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
+            markRecordSynced('customers', c.id, cleanC);
+            c.synced = true;
+            c.syncedAt = Date.now();
+            hasUpdatedCust = true;
+          }
+        }
+        await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
+          data: custList,
+          organizationId: orgId,
+          updatedAt: Date.now()
+        }, { merge: true });
+
+        if (hasUpdatedCust) {
+          localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(custList));
+          localStorage.setItem('bizflow_customers_v1', JSON.stringify(custList));
+          broadcastSync('customers', custList);
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-sync customers notice:', e);
+    }
+
+    // 4. Scan and upload Inventory
+    try {
+      const invList = getAdminInventory();
+      if (Array.isArray(invList) && invList.length > 0) {
+        for (const item of invList) {
+          if (!item || !item.id) continue;
+          const itemId = String(item.id);
+          if (!isRecordSynced('inventory', itemId, item)) {
+            const cleanItem = { ...item, organizationId: orgId, updatedAt: item.updatedAt || Date.now() };
+            await safeSetDoc(doc(db, 'inventory', itemId), cleanItem, { merge: true });
+            markRecordSynced('inventory', itemId, cleanItem);
+          }
+        }
+        await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
+          data: invList,
+          organizationId: orgId,
+          updatedAt: Date.now()
+        }, { merge: true });
+      }
+    } catch (e) {
+      console.warn('Auto-sync inventory notice:', e);
+    }
+
+    // 5. Scan and upload Settlements
     try {
       const stlRaw = localStorage.getItem(`bizflow_${orgId}_settlements_v1`) || localStorage.getItem('bizflow_settlements_v1');
       if (stlRaw) {
@@ -590,36 +728,7 @@ export const autoSyncUnsyncedData = async () => {
       console.warn('Auto-sync settlements notice:', e);
     }
 
-    // 4. Scan and upload unsynced Customers
-    try {
-      const custRaw = localStorage.getItem(`bizflow_${orgId}_customers_v1`) || localStorage.getItem('bizflow_customers_v1');
-      if (custRaw) {
-        const custList = JSON.parse(custRaw);
-        if (Array.isArray(custList)) {
-          let hasUpdatedCust = false;
-          for (const c of custList) {
-            if (!c || !c.id) continue;
-            if (!isRecordSynced('customers', c.id, c)) {
-              const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
-              await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
-              markRecordSynced('customers', c.id, cleanC);
-              c.synced = true;
-              c.syncedAt = Date.now();
-              hasUpdatedCust = true;
-            }
-          }
-          if (hasUpdatedCust) {
-            localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(custList));
-            localStorage.setItem('bizflow_customers_v1', JSON.stringify(custList));
-            broadcastSync('customers', custList);
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('Auto-sync customers notice:', e);
-    }
-
-    // 5. Scan and upload unsynced Expenses
+    // 6. Scan and upload Expenses
     try {
       const expRaw = localStorage.getItem(`bizflow_${orgId}_expenses_v1`) || localStorage.getItem('bizflow_expenses_v1');
       if (expRaw) {
@@ -648,9 +757,32 @@ export const autoSyncUnsyncedData = async () => {
       console.warn('Auto-sync expenses notice:', e);
     }
 
-    // 6. Scan and upload unsynced Attendance
+    // 7. Scan and upload Suppliers
     try {
-      const attRaw = localStorage.getItem(`bizflow_${orgId}_attendance_v1`);
+      const supList = getSuppliers();
+      if (Array.isArray(supList) && supList.length > 0) {
+        for (const s of supList) {
+          if (!s || !s.id) continue;
+          const sId = String(s.id);
+          if (!isRecordSynced('suppliers', sId, s)) {
+            const cleanS = { ...s, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
+            await safeSetDoc(doc(db, 'suppliers', sId), cleanS, { merge: true });
+            markRecordSynced('suppliers', sId, cleanS);
+          }
+        }
+        await safeSetDoc(doc(db, 'system', `org_${orgId}_suppliers`), {
+          data: supList,
+          organizationId: orgId,
+          updatedAt: Date.now()
+        }, { merge: true });
+      }
+    } catch (e) {
+      console.warn('Auto-sync suppliers notice:', e);
+    }
+
+    // 8. Scan and upload Attendance
+    try {
+      const attRaw = localStorage.getItem(`bizflow_${orgId}_attendance_v1`) || localStorage.getItem('bizflow_attendance_v1');
       if (attRaw) {
         const attList = JSON.parse(attRaw);
         if (Array.isArray(attList)) {
@@ -671,6 +803,82 @@ export const autoSyncUnsyncedData = async () => {
     console.warn('Auto-sync error:', err);
   } finally {
     isAutoSyncing = false;
+  }
+};
+
+/**
+ * Force pushes ALL local records (sales, customers, inventory, expenses, etc.)
+ * directly to Firebase Firestore regardless of prior signatures.
+ */
+export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; customersCount: number; inventoryCount: number; success: boolean }> => {
+  const orgId = getActiveOrgId();
+  let salesCount = 0;
+  let customersCount = 0;
+  let inventoryCount = 0;
+
+  try {
+    // 1. Upload All Sales
+    const salesList = getSalesHistory();
+    if (Array.isArray(salesList) && salesList.length > 0) {
+      salesCount = salesList.length;
+      for (const s of salesList) {
+        if (!s || (!s.id && !s.billNo)) continue;
+        const sId = String(s.id || s.billNo);
+        const cleanS = { ...s, id: sId, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
+        await safeSetDoc(doc(db, 'sales', sId), cleanS, { merge: true });
+        markRecordSynced('sales', sId, cleanS);
+      }
+      await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
+        data: salesList,
+        organizationId: orgId,
+        updatedAt: Date.now()
+      }, { merge: true });
+    }
+
+    // 2. Upload All Customers
+    const custList = getCustomers();
+    if (Array.isArray(custList) && custList.length > 0) {
+      customersCount = custList.length;
+      for (const c of custList) {
+        if (!c || !c.id) continue;
+        const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
+        await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
+        markRecordSynced('customers', c.id, cleanC);
+      }
+      await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
+        data: custList,
+        organizationId: orgId,
+        updatedAt: Date.now()
+      }, { merge: true });
+    }
+
+    // 3. Upload All Inventory
+    const invList = getAdminInventory();
+    if (Array.isArray(invList) && invList.length > 0) {
+      inventoryCount = invList.length;
+      for (const item of invList) {
+        if (!item || !item.id) continue;
+        const cleanItem = { ...item, organizationId: orgId, updatedAt: item.updatedAt || Date.now() };
+        await safeSetDoc(doc(db, 'inventory', String(item.id)), cleanItem, { merge: true });
+        markRecordSynced('inventory', item.id, cleanItem);
+      }
+      await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
+        data: invList,
+        organizationId: orgId,
+        updatedAt: Date.now()
+      }, { merge: true });
+    }
+
+    // Trigger sync events
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: getTodayQuotaStats() }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: salesList } }));
+    }
+
+    return { salesCount, customersCount, inventoryCount, success: true };
+  } catch (err) {
+    console.error('Force upload to cloud failed:', err);
+    return { salesCount, customersCount, inventoryCount, success: false };
   }
 };
 
