@@ -134,18 +134,41 @@ export const purgeNimalKamal = () => {
 
 export const getUsers = (): SystemUser[] => {
   const orgId = getActiveOrgId();
-  try {
-    const stored = localStorage.getItem(`bizflow_${orgId}_users_v2`) || 
-                   localStorage.getItem(`bizflow_MYM-BIZFLOW_users_v2`) || 
-                   localStorage.getItem(`bizflow_default_users_v2`) || 
-                   localStorage.getItem(`bizflow_users_v2`);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+  const keys = [
+    `bizflow_${orgId}_users_v2`,
+    `bizflow_MYM-BIZFLOW_users_v2`,
+    `bizflow_default_users_v2`,
+    `bizflow_users_v2`,
+    `bizflow_${orgId}_users_v1`,
+    `bizflow_MYM-BIZFLOW_users_v1`,
+    `bizflow_default_users_v1`,
+    `bizflow_users_v1`,
+    `bizflow_users`
+  ];
+  
+  const userMap = new Map<string, SystemUser>();
+  keys.forEach(k => {
+    try {
+      const stored = localStorage.getItem(k);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((u: SystemUser) => {
+            if (u && (u.id || u.name)) {
+              const userKey = u.id || `user_${u.name}_${u.role}`;
+              if (!userMap.has(userKey)) {
+                userMap.set(userKey, u);
+              }
+            }
+          });
+        }
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  });
+
+  if (userMap.size > 0) {
+    return Array.from(userMap.values());
+  }
   
   const defaults: SystemUser[] = [
     { 
@@ -2126,19 +2149,37 @@ export const DEFAULT_SALES: any[] = [];
 
 export const getSalesHistory = (): any[] => {
   const orgId = getActiveOrgId();
-  try {
-    const stored = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || 
-                   localStorage.getItem(`bizflow_MYM-BIZFLOW_sales_v1`) || 
-                   localStorage.getItem('bizflow_sales_v1');
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
-    }
-  } catch (e) {}
+  const keys = [
+    `bizflow_${orgId}_sales_v1`,
+    `bizflow_MYM-BIZFLOW_sales_v1`,
+    `bizflow_default_sales_v1`,
+    `bizflow_sales_v1`,
+    `bizflow_${orgId}_sales`,
+    `bizflow_MYM-BIZFLOW_sales`,
+    `bizflow_sales`
+  ];
 
-  return [];
+  const salesMap = new Map<string, any>();
+  keys.forEach(k => {
+    try {
+      const stored = localStorage.getItem(k);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((s: any) => {
+            if (s) {
+              const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || (s.date && s.customer ? `${s.date}_${s.customer}_${s.total || s.netAmount}` : ''));
+              if (key && !salesMap.has(key)) {
+                salesMap.set(key, s);
+              }
+            }
+          });
+        }
+      }
+    } catch (e) {}
+  });
+
+  return Array.from(salesMap.values());
 };
 
 export const saveCustomers = (customers: any[]) => {
@@ -2352,15 +2393,65 @@ export const syncAllFromCloud = async () => {
       fetchTableData('users', { limitCount: 200 })
     ]);
 
+    if (Array.isArray(sales) && sales.length > 0) {
+      const currentSales = getSalesHistory();
+      const salesMap = new Map<string, any>();
+      currentSales.forEach(s => {
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || Math.random());
+        salesMap.set(key, s);
+      });
+      sales.forEach(s => {
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || Math.random());
+        if (!salesMap.has(key)) {
+          salesMap.set(key, s);
+        }
+      });
+      saveSalesHistory(Array.from(salesMap.values()));
+    }
+
     if (Array.isArray(userColData) && userColData.length > 0) {
       const currentUsers = getUsers();
       const userMap = new Map<string, SystemUser>();
-      currentUsers.forEach(u => userMap.set(u.id, u));
+      currentUsers.forEach(u => {
+        const key = u.id || `user_${u.name}_${u.role}`;
+        userMap.set(key, u);
+      });
       userColData.forEach((u: any) => {
-        if (u && u.id) userMap.set(u.id, u);
+        if (u && (u.id || u.name)) {
+          const key = u.id || `user_${u.name}_${u.role}`;
+          userMap.set(key, u);
+        }
       });
       const mergedUsers = Array.from(userMap.values());
       saveUsers(mergedUsers);
+    }
+
+    if (Array.isArray(customers) && customers.length > 0) {
+      const currentCust = getCustomers();
+      const custMap = new Map<string, any>();
+      currentCust.forEach(c => {
+        const key = String(c.id || c.name || Math.random());
+        custMap.set(key, c);
+      });
+      customers.forEach(c => {
+        const key = String(c.id || c.name || Math.random());
+        if (!custMap.has(key)) custMap.set(key, c);
+      });
+      saveCustomers(Array.from(custMap.values()));
+    }
+
+    if (Array.isArray(suppliers) && suppliers.length > 0) {
+      const currentSupp = getSuppliers();
+      const suppMap = new Map<string, any>();
+      currentSupp.forEach(s => {
+        const key = String(s.id || s.name || Math.random());
+        suppMap.set(key, s);
+      });
+      suppliers.forEach(s => {
+        const key = String(s.id || s.name || Math.random());
+        if (!suppMap.has(key)) suppMap.set(key, s);
+      });
+      saveSuppliers(Array.from(suppMap.values()));
     }
 
     if (Array.isArray(invColData) && invColData.length > 0) {
@@ -2500,7 +2591,8 @@ export function recalculateCustomerDebtChain(
   allSales: any[],
   allCustomers: any[],
   manualAnchorSaleId?: string,
-  manualAnchorNewBalance?: number
+  manualAnchorNewBalance?: number,
+  manualCustomerBalance?: number
 ): CustomerDebtRecalcResult {
   const normTargetName = (customerName || '').toLowerCase().trim();
   if (!normTargetName) {
@@ -2587,10 +2679,26 @@ export function recalculateCustomerDebtChain(
     updatedSalesForSync.push(sale);
   });
 
+  // If a direct manual customer balance was provided (e.g. from customer directory edit)
+  if (manualCustomerBalance !== undefined && !isNaN(manualCustomerBalance)) {
+    runningBalance = manualCustomerBalance;
+    if (customerSales.length > 0 && !manualAnchorSaleId) {
+      const lastSale = customerSales[customerSales.length - 1];
+      lastSale.newBalance = manualCustomerBalance;
+      lastSale.remainingBalance = manualCustomerBalance;
+      lastSale.updatedAt = new Date().toISOString();
+      if (!updatedSalesForSync.some(s => String(s.id) === String(lastSale.id))) {
+        updatedSalesForSync.push(lastSale);
+      }
+    }
+  }
+
   const newAllSales = [...customerSales, ...otherSales].sort((a, b) => getEpoch(b) - getEpoch(a));
 
   let finalCustomerBalance = runningBalance;
-  if (customerSales.length === 0 && targetCust) {
+  if (customerSales.length === 0 && manualCustomerBalance !== undefined && !isNaN(manualCustomerBalance)) {
+    finalCustomerBalance = manualCustomerBalance;
+  } else if (customerSales.length === 0 && targetCust) {
     finalCustomerBalance = Number(targetCust.balance || 0);
   }
 

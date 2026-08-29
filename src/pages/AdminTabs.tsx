@@ -1683,7 +1683,6 @@ export function CustomersTab({ customers, setCustomers }: { customers: any[], se
     const updatedList = customers.map(c => 
       (c.id === editingCustomer.id || (c.name || '').toLowerCase().trim() === oldName.toLowerCase()) ? updatedCust : c
     );
-    setCustomers(updatedList);
 
     const storedSalesStr = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1') || '[]';
     let allSales: any[] = [];
@@ -1700,7 +1699,25 @@ export function CustomersTab({ customers, setCustomers }: { customers: any[], se
       });
     }
 
-    persistSalesAndCustomers(orgId, modifiedSales, updatedList, [], updatedCust);
+    // Cascade new balance across debt chain so bills and arrears align permanently
+    const recalcRes = recalculateCustomerDebtChain(
+      newName,
+      modifiedSales,
+      updatedList,
+      undefined,
+      undefined,
+      newBal
+    );
+
+    setCustomers(recalcRes.newAllCustomers);
+    persistSalesAndCustomers(
+      orgId, 
+      recalcRes.newAllSales, 
+      recalcRes.newAllCustomers, 
+      recalcRes.updatedSalesForSync, 
+      recalcRes.updatedCustomerForSync || updatedCust
+    );
+
     setEditingCustomer(null);
     alert('ගනුදෙනුකරුගේ තොරතුරු සහ ණය මුදල සාර්ථකව යාවත්කාලීන විය!\n(Customer details and balance updated successfully!)');
   };

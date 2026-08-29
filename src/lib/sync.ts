@@ -705,10 +705,8 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export const isSamplePerson = (str: string) => {
-  const s = (str || '').trim().toLowerCase();
-  const banned = ['nimal', 'kamal', 'sunil', 'chamara'];
-  return banned.some(b => s === b || s.includes(b));
+export const isSamplePerson = (_str: string) => {
+  return false;
 };
 
 export const fetchTableData = async (table: string, options?: { forceAll?: boolean; limitCount?: number }) => {
