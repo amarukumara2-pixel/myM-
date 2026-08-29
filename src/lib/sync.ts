@@ -42,12 +42,12 @@ if (typeof window !== 'undefined') {
 // The Firestore client uses an in-memory cache below, while BizFlow's durable
 // pending queue remains in localStorage until the next successful sync.
 
-// Firebase Initialization with lightweight in-memory cache
+// Firebase Initialization with lightweight in-memory cache and forced HTTP long-polling for iframe/container compatibility
 export const app = initializeApp(configuredFirebase);
 export const db = initializeFirestore(
   app,
   {
-    experimentalAutoDetectLongPolling: true,
+    experimentalForceLongPolling: true,
     localCache: memoryLocalCache(),
   },
   firestoreDatabaseId
