@@ -114,56 +114,58 @@ export interface SystemUser {
   lastOnline?: number;
 }
 
-export const isSamplePerson = (str: string) => {
-  const s = (str || '').trim().toLowerCase();
-  const banned = ['nimal', 'kamal', 'sunil', 'chamara'];
-  return banned.some(b => s === b || s.includes(b));
+export const DEFAULT_USERS: SystemUser[] = [
+  { 
+    id: `admin_MYM-BIZFLOW`, 
+    name: 'Admin', 
+    pin: '1993', 
+    role: 'admin',
+    organizationId: 'MYM-BIZFLOW' 
+  },
+  { 
+    id: 'rep_chamod', 
+    name: 'චමෝද් (Chamod)', 
+    pin: '1234', 
+    role: 'rep',
+    organizationId: 'MYM-BIZFLOW',
+    activeArea: 'Mirigama'
+  },
+  { 
+    id: 'rep_chaminda', 
+    name: 'චමින්ද (Chaminda)', 
+    pin: '2233', 
+    role: 'rep',
+    organizationId: 'MYM-BIZFLOW',
+    activeArea: 'Gampaha'
+  },
+  { 
+    id: 'rep_kasun', 
+    name: 'කසුන් (Kasun)', 
+    pin: '1122', 
+    role: 'rep',
+    organizationId: 'MYM-BIZFLOW',
+    activeArea: 'Nittambuwa'
+  },
+  { 
+    id: 'rep_lahiru', 
+    name: 'ලහිරු (Lahiru)', 
+    pin: '4455', 
+    role: 'rep',
+    organizationId: 'MYM-BIZFLOW',
+    activeArea: 'Kaduwela'
+  }
+];
+
+export const isSamplePerson = (_str: string) => {
+  return false;
 };
 
 export const purgeNimalKamal = () => {
-  const orgId = getActiveOrgId();
-  const userKeys = [`bizflow_${orgId}_users_v2`, 'bizflow_MYM-BIZFLOW_users_v2', 'bizflow_default_users_v2', 'bizflow_users_v2'];
-  userKeys.forEach(key => {
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter((u: SystemUser) => {
-            const name = (u.name || '').trim().toLowerCase();
-            return !isSamplePerson(name);
-          });
-          if (filtered.length !== parsed.length) {
-            safeSetItem(key, JSON.stringify(filtered));
-          }
-        }
-      }
-    } catch (e) {}
-  });
-
-  const salesKeys = [`bizflow_${orgId}_sales_v1`, `bizflow_MYM-BIZFLOW_sales_v1`, 'bizflow_sales_v1'];
-  salesKeys.forEach(key => {
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter((s: any) => {
-            const repName = (s.rep || s.repName || s.salesPerson || s.repId || '').trim().toLowerCase();
-            return !isSamplePerson(repName);
-          });
-          if (filtered.length !== parsed.length) {
-            safeSetItem(key, JSON.stringify(filtered));
-          }
-        }
-      }
-    } catch (e) {}
-  });
+  // No-op to preserve user created reps
 };
 
 export const getUsers = (): SystemUser[] => {
   const orgId = getActiveOrgId();
-  purgeNimalKamal();
   try {
     const stored = localStorage.getItem(`bizflow_${orgId}_users_v2`) || 
                    localStorage.getItem(`bizflow_MYM-BIZFLOW_users_v2`) || 
@@ -172,25 +174,27 @@ export const getUsers = (): SystemUser[] => {
     if (stored) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const filtered = parsed.filter((u: SystemUser) => {
-          const name = (u.name || '').trim().toLowerCase();
-          return !isSamplePerson(name);
-        });
-        return filtered;
+        // Ensure reps exist in parsed users list
+        const hasRep = parsed.some((u: SystemUser) => u.role === 'rep');
+        if (hasRep) {
+          return parsed;
+        } else {
+          // Merge default reps if missing
+          const defaultReps = DEFAULT_USERS.filter(u => u.role === 'rep');
+          const merged = [...parsed, ...defaultReps];
+          safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(merged));
+          safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(merged));
+          safeSetItem(`bizflow_users_v2`, JSON.stringify(merged));
+          return merged;
+        }
       }
     }
   } catch (e) {}
   
-  // Default Admin User for this org
-  const defaults: SystemUser[] = [{ 
-    id: `admin_${orgId}`, 
-    name: 'Admin', 
-    pin: '1993', 
-    role: 'admin',
-    organizationId: orgId 
-  }];
-  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(defaults));
-  return defaults;
+  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(DEFAULT_USERS));
+  safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(DEFAULT_USERS));
+  safeSetItem(`bizflow_users_v2`, JSON.stringify(DEFAULT_USERS));
+  return DEFAULT_USERS;
 };
 
 
@@ -332,7 +336,26 @@ export const getRepInventory = (repId: string): RepInventoryItem[] => {
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch(e) {}
-  return [];
+
+  const initialRepStock: RepInventoryItem[] = (REAL_INVENTORY || []).map(item => ({
+    id: item.id,
+    name: item.name,
+    category: item.category || 'General',
+    price: item.price || item.minPrice || item.sellingPrice,
+    minPrice: item.minPrice || item.price,
+    maxPrice: item.maxPrice || item.price,
+    wholesalePrice: item.costPrice || item.wholesalePrice,
+    mainStock: item.stock || 0,
+    mainStockQty: item.stock || 0,
+    stockInMain: item.stock || 0,
+    myStock: item.myStock || (item.stock > 0 ? Math.min(item.stock, 20) : 0),
+    returnStock: 0,
+    costPrice: item.costPrice || 0
+  }));
+
+  safeSetItem(`bizflow_${orgId}_repinv_${repId}`, JSON.stringify(initialRepStock));
+  safeSetItem(`bizflow_repinv_${repId}`, JSON.stringify(initialRepStock));
+  return initialRepStock;
 };
 
 export const saveRepInventory = (repId: string, inv: RepInventoryItem[]) => {
@@ -2090,6 +2113,14 @@ export const getAdminInventory = (): any[] => {
   return REAL_INVENTORY;
 };
 
+export const DEFAULT_CUSTOMERS = [
+  { id: 'cust_1', name: 'කුමාර ස්ටෝර්ස්', phone: '0771234567', address: 'මිරිගම පාර, මිරිගම', route: 'Mirigama', balance: 12500, creditLimit: 50000, creditDays: 30, discountPercent: 0 },
+  { id: 'cust_2', name: 'ජයලත් මිණි මාට්', phone: '0719876543', address: 'නගරසභා පාර, ගම්පහ', route: 'Gampaha', balance: 18400, creditLimit: 60000, creditDays: 30, discountPercent: 0 },
+  { id: 'cust_3', name: 'විජය එන්ටප්‍රයිසස්', phone: '0755551234', address: 'මහ පාර, නිට්ටඹුව', route: 'Nittambuwa', balance: 22000, creditLimit: 75000, creditDays: 21, discountPercent: 0 },
+  { id: 'cust_4', name: 'සම්පත් වෙළඳසැල', phone: '0782223344', address: 'නගරය, කඩුවෙල', route: 'Kaduwela', balance: 9500, creditLimit: 40000, creditDays: 14, discountPercent: 0 },
+  { id: 'cust_5', name: 'නගර සුපර්මාකට්', phone: '0764445566', address: 'පෑලියගොඩ', route: 'Peliyagoda', balance: 0, creditLimit: 100000, creditDays: 30, discountPercent: 0 }
+];
+
 export const getCustomers = (): any[] => {
   const orgId = getActiveOrgId();
   try {
@@ -2098,14 +2129,34 @@ export const getCustomers = (): any[] => {
                    localStorage.getItem('bizflow_customers_v1');
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((c: any) => c.name !== 'Sampath Stores' && c.name !== 'Wijaya Enterprises' && c.name !== 'City Super Grocery');
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
       }
     }
   } catch (e) {}
 
-  return [];
+  safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(DEFAULT_CUSTOMERS));
+  safeSetItem('bizflow_customers_v1', JSON.stringify(DEFAULT_CUSTOMERS));
+  return DEFAULT_CUSTOMERS;
 };
+
+export const DEFAULT_SUPPLIERS = [
+  { id: 'sup_1', name: 'චමෝද්', contactPerson: 'චමෝද්', phone: '0771112233', category: 'General' },
+  { id: 'sup_2', name: 'බින්ගො', contactPerson: 'බින්ගො', phone: '0712223344', category: 'Confectionery' },
+  { id: 'sup_3', name: 'අනූෂා', contactPerson: 'අනූෂා', phone: '0753334455', category: 'Spices' },
+  { id: 'sup_4', name: 'රන්මල්', contactPerson: 'රන්මල්', phone: '0784445566', category: 'Sweets' },
+  { id: 'sup_5', name: 'දේදුණු', contactPerson: 'දේදුණු', phone: '0765556677', category: 'Snacks' },
+  { id: 'sup_6', name: 'හිරු', contactPerson: 'හිරු', phone: '0726667788', category: 'Grocery' },
+  { id: 'sup_7', name: 'NSR', contactPerson: 'NSR', phone: '0707778899', category: 'General' },
+  { id: 'sup_8', name: 'C cola', contactPerson: 'C cola', phone: '0778889900', category: 'Beverages' },
+  { id: 'sup_9', name: 'ලලිත්', contactPerson: 'ලලිත්', phone: '0719990011', category: 'General' },
+  { id: 'sup_10', name: 'මිරිගම', contactPerson: 'මිරිගම', phone: '0750001122', category: 'Sweets' },
+  { id: 'sup_11', name: 'මල්ටි', contactPerson: 'මල්ටි', phone: '0781112233', category: 'Grocery' },
+  { id: 'sup_12', name: 'තිලිණි', contactPerson: 'තිලිණි', phone: '0762223344', category: 'Grocery' },
+  { id: 'sup_13', name: 'හෙට්ටි', contactPerson: 'හෙට්ටි', phone: '0723334455', category: 'General' },
+  { id: 'sup_14', name: 'දබුල්ල', contactPerson: 'දබුල්ල', phone: '0704445566', category: 'Biscuits' },
+  { id: 'sup_15', name: 'ලක්රස', contactPerson: 'ලක්රස', phone: '0775556677', category: 'Sweets' }
+];
 
 export const getSuppliers = (): any[] => {
   const orgId = getActiveOrgId();
@@ -2115,14 +2166,61 @@ export const getSuppliers = (): any[] => {
                    localStorage.getItem('bizflow_suppliers_v1');
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((s: any) => !s.name?.includes('CBL (Ceylon') && !s.name?.includes('Fonterra') && !s.name?.includes('Unilever Sri'));
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
       }
     }
   } catch (e) {}
 
-  return [];
+  safeSetItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(DEFAULT_SUPPLIERS));
+  safeSetItem('bizflow_suppliers_v1', JSON.stringify(DEFAULT_SUPPLIERS));
+  return DEFAULT_SUPPLIERS;
 };
+
+export const DEFAULT_SALES = [
+  {
+    id: 'INV-1001',
+    invoiceNo: 'INV-1001',
+    customer: 'කුමාර ස්ටෝර්ස්',
+    customerId: 'cust_1',
+    address: 'මිරිගම පාර, මිරිගම',
+    area: 'Mirigama',
+    rep: 'චමෝද් (Chamod)',
+    repId: 'rep_chamod',
+    date: new Date().toISOString().split('T')[0],
+    timestamp: Date.now() - 3600000 * 5,
+    items: [
+      { id: 1780000000001, name: 'ඥානකතා 20 පොඩි', price: 530, qty: 5, total: 2650 },
+      { id: 1780000000002, name: 'ටොෆි-මිල්ක්', price: 500, qty: 10, total: 5000 }
+    ],
+    totalAmount: 7650,
+    paidAmount: 7650,
+    dueAmount: 0,
+    paymentType: 'Cash',
+    paymentStatus: 'Paid'
+  },
+  {
+    id: 'INV-1002',
+    invoiceNo: 'INV-1002',
+    customer: 'ජයලත් මිණි මාට්',
+    customerId: 'cust_2',
+    address: 'නගරසභා පාර, ගම්පහ',
+    area: 'Gampaha',
+    rep: 'චමින්ද (Chaminda)',
+    repId: 'rep_chaminda',
+    date: new Date().toISOString().split('T')[0],
+    timestamp: Date.now() - 3600000 * 2,
+    items: [
+      { id: 1780000000010, name: 'නූඩ්ල්ස් 400g', price: 190, qty: 20, total: 3800 },
+      { id: 1780000000025, name: 'බීම 350ml', price: 95, qty: 24, total: 2280 }
+    ],
+    totalAmount: 6080,
+    paidAmount: 0,
+    dueAmount: 6080,
+    paymentType: 'Credit',
+    paymentStatus: 'Credit'
+  }
+];
 
 export const getSalesHistory = (): any[] => {
   const orgId = getActiveOrgId();
@@ -2132,13 +2230,15 @@ export const getSalesHistory = (): any[] => {
                    localStorage.getItem('bizflow_sales_v1');
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((s: any) => s.id !== 'INV-1001' && s.id !== 'INV-1002' && s.id !== 'INV-1003');
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
       }
     }
   } catch (e) {}
 
-  return [];
+  safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(DEFAULT_SALES));
+  safeSetItem('bizflow_sales_v1', JSON.stringify(DEFAULT_SALES));
+  return DEFAULT_SALES;
 };
 
 export const saveAdminInventory = (inventory: any[]) => {
