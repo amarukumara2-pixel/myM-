@@ -49,8 +49,8 @@ export const FirebaseQuotaWidget: React.FC<Props> = ({ lang = 'si', compact = fa
       refreshData();
       if (res.success) {
         alert(lang === 'si' 
-          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Firebase Cloud වෙත සුරක්ෂිතව Upload කරන ලදී.`
-          : `Success! ${res.salesCount} bills, ${res.customersCount} customers, and ${res.inventoryCount} items synced to Firebase.`
+          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, නියෝජිතයින් (Reps) ${res.repsCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Cloud වෙතින් සාර්ථකව Sync විය.`
+          : `Success! ${res.salesCount} bills, ${res.repsCount} reps, ${res.customersCount} customers, and ${res.inventoryCount} items synced with Firebase Cloud.`
         );
       }
     } catch (e) {

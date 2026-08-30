@@ -4592,7 +4592,18 @@ export function RepsTab({ items, setItems, suppliers, setSuppliers }: { items: a
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-3">
+        <button 
+          onClick={async () => {
+            const { forceUploadAllToCloud } = await import('../lib/sync');
+            const res = await forceUploadAllToCloud();
+            setReps(getUsers().filter(u => u.role === 'rep'));
+            alert(`සාර්ථකයි! Reps ${res.repsCount}ක්, බිල්පත් ${res.salesCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Cloud වෙතින් Sync විය.`);
+          }}
+          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-3 rounded-xl flex items-center shadow-lg shadow-emerald-500/15 text-sm transition-all active:scale-95"
+        >
+          <RefreshCw size={18} className="mr-1.5" /> Sync Reps with Cloud
+        </button>
         <button 
           onClick={() => setIsAdding(!isAdding)}
           className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-3 rounded-xl flex items-center shadow-lg shadow-blue-500/15 text-sm transition-all active:scale-95"
@@ -5262,8 +5273,8 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
       setCustomers(getCustomers());
       if (res.success) {
         setSyncFeedback(lang === 'si' 
-          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Firebase Cloud වෙත සාර්ථකව Sync කරන ලදී!`
-          : `Success! ${res.salesCount} bills, ${res.customersCount} customers, and ${res.inventoryCount} items synced to Firebase Cloud!`
+          ? `සාර්ථකයි! බිල්පත් ${res.salesCount}ක්, නියෝජිතයින් (Reps) ${res.repsCount}ක්, පාරිභෝගිකයින් ${res.customersCount}ක් සහ භාණ්ඩ ${res.inventoryCount}ක් Cloud වෙතින් සාර්ථකව Sync කරන ලදී!`
+          : `Success! ${res.salesCount} bills, ${res.repsCount} reps, ${res.customersCount} customers, and ${res.inventoryCount} items synced with Firebase Cloud!`
         );
       } else {
         setSyncFeedback(lang === 'si' ? 'Sync කිරීමේදී දෝෂයක් ඇති විය. අන්තර්ජාල සම්බන්ධතාව පරීක්ෂා කරන්න.' : 'Error during sync. Please check internet connection.');

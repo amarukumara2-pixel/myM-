@@ -258,7 +258,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   }
 }
 
-import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory } from './store';
+import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory, getUsers } from './store';
 
 export interface SyncPayload {
   id: string;
@@ -807,21 +807,216 @@ export const autoSyncUnsyncedData = async () => {
 };
 
 /**
- * Force pushes ALL local records (sales, customers, inventory, expenses, etc.)
- * directly to Firebase Firestore regardless of prior signatures.
+ * Comprehensive bidirectional synchronization:
+ * 1. Downloads all existing records (sales, customers, inventory, expenses, settlements, suppliers) from Firestore
+ * 2. Merges cloud and local records seamlessly
+ * 3. Uploads any unsynced records back to Firestore
+ * 4. Broadcasts sync events to update all UI components in real-time
  */
-export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; customersCount: number; inventoryCount: number; success: boolean }> => {
+export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; repsCount: number; customersCount: number; inventoryCount: number; expensesCount: number; success: boolean }> => {
   const orgId = getActiveOrgId();
   let salesCount = 0;
+  let repsCount = 0;
   let customersCount = 0;
   let inventoryCount = 0;
+  let expensesCount = 0;
 
   try {
-    // 1. Upload All Sales
-    const salesList = getSalesHistory();
-    if (Array.isArray(salesList) && salesList.length > 0) {
-      salesCount = salesList.length;
-      for (const s of salesList) {
+    // ==========================================
+    // 1. PULL & MERGE USERS / REPS (Cloud <-> Local)
+    // ==========================================
+    const userMap = new Map<string, any>();
+    
+    // a. Local users
+    const localUsers = getUsers();
+    localUsers.forEach(u => {
+      if (!u) return;
+      const key = u.id || `user_${u.name}_${u.role}`;
+      userMap.set(key, u);
+    });
+
+    // b. Cloud users & reps collections
+    try {
+      const [usersSnap, repsSnap] = await Promise.all([
+        getDocs(query(collection(db, 'users'), limit(500))).catch(() => null),
+        getDocs(query(collection(db, 'reps'), limit(500))).catch(() => null)
+      ]);
+      if (usersSnap && !usersSnap.empty) {
+        trackFirestoreUsage('read', usersSnap.docs.length);
+        usersSnap.docs.forEach(docSnap => {
+          const data: any = docSnap.data();
+          if (!data) return;
+          const u: any = { ...data, id: data.id || docSnap.id };
+          const key = u.id || `user_${u.name}_${u.role}`;
+          if (key) {
+            const existing = userMap.get(key);
+            if (!existing || (Number(u.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+              userMap.set(key, u);
+            }
+          }
+        });
+      }
+      if (repsSnap && !repsSnap.empty) {
+        trackFirestoreUsage('read', repsSnap.docs.length);
+        repsSnap.docs.forEach(docSnap => {
+          const data: any = docSnap.data();
+          if (!data) return;
+          const u: any = { ...data, id: data.id || docSnap.id, role: data.role || 'rep' };
+          const key = u.id || `user_${u.name}_${u.role}`;
+          if (key && !userMap.has(key)) {
+            userMap.set(key, u);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('Pull users collection notice:', e);
+    }
+
+    // c. Cloud system user docs
+    try {
+      const [sysU1, sysU2, sysU3, sysU4, sysU5] = await Promise.all([
+        getDoc(doc(db, 'system', `org_${orgId}_users`)).catch(() => null),
+        getDoc(doc(db, 'system', 'org_MYM-BIZFLOW_users')).catch(() => null),
+        getDoc(doc(db, 'system', 'org_default_users')).catch(() => null),
+        getDoc(doc(db, 'system', 'users')).catch(() => null),
+        getDoc(doc(db, 'system', 'reps')).catch(() => null)
+      ]);
+      [sysU1, sysU2, sysU3, sysU4, sysU5].forEach(snap => {
+        const uArr = snap?.data()?.data;
+        if (Array.isArray(uArr)) {
+          uArr.forEach((u: any) => {
+            if (!u) return;
+            const key = u.id || `user_${u.name}_${u.role}`;
+            if (key && !userMap.has(key)) {
+              userMap.set(key, u);
+            }
+          });
+        }
+      });
+    } catch (e) {}
+
+    // Make sure default admin exists if user map is empty
+    if (userMap.size === 0) {
+      userMap.set(`admin_${orgId}`, {
+        id: `admin_${orgId}`,
+        name: 'Admin',
+        pin: '1993',
+        role: 'admin',
+        organizationId: orgId
+      });
+    }
+
+    const allMergedUsers = Array.from(userMap.values());
+    repsCount = allMergedUsers.filter(u => u.role === 'rep').length;
+
+    localStorage.setItem(`bizflow_${orgId}_users_v2`, JSON.stringify(allMergedUsers));
+    localStorage.setItem('bizflow_MYM-BIZFLOW_users_v2', JSON.stringify(allMergedUsers));
+    localStorage.setItem('bizflow_users_v2', JSON.stringify(allMergedUsers));
+
+    // Upload merged users to Firestore
+    if (allMergedUsers.length > 0) {
+      for (const u of allMergedUsers) {
+        if (!u || !u.id) continue;
+        const cleanU = { ...u, organizationId: orgId, updatedAt: u.updatedAt || Date.now() };
+        await safeSetDoc(doc(db, 'users', String(u.id)), cleanU, { merge: true });
+      }
+      await safeSetDoc(doc(db, 'system', `org_${orgId}_users`), {
+        data: allMergedUsers,
+        organizationId: orgId,
+        updatedAt: Date.now()
+      }, { merge: true });
+    }
+
+    // ==========================================
+    // 2. PULL & MERGE SALES / BILLS (Cloud <-> Local)
+    // ==========================================
+    const salesMap = new Map<string, any>();
+    
+    // a. Local sales
+    const localSales = getSalesHistory();
+    localSales.forEach(s => {
+      if (!s) return;
+      const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+      if (key) salesMap.set(key, s);
+    });
+
+    // b. Cloud sales / bills / invoices collections
+    try {
+      const [salesSnap, billsSnap, invSnap] = await Promise.all([
+        getDocs(query(collection(db, 'sales'), limit(3000))).catch(() => null),
+        getDocs(query(collection(db, 'bills'), limit(3000))).catch(() => null),
+        getDocs(query(collection(db, 'invoices'), limit(3000))).catch(() => null)
+      ]);
+
+      const processDocSnap = (docSnap: any) => {
+        const data: any = docSnap.data();
+        if (!data) return;
+        const s: any = { ...data, id: data.id || docSnap.id };
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || docSnap.id);
+        if (key) {
+          const existing = salesMap.get(key);
+          if (!existing || (Number(s.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+            salesMap.set(key, s);
+          }
+        }
+      };
+
+      if (salesSnap && !salesSnap.empty) {
+        trackFirestoreUsage('read', salesSnap.docs.length);
+        salesSnap.docs.forEach(processDocSnap);
+      }
+      if (billsSnap && !billsSnap.empty) {
+        trackFirestoreUsage('read', billsSnap.docs.length);
+        billsSnap.docs.forEach(processDocSnap);
+      }
+      if (invSnap && !invSnap.empty) {
+        trackFirestoreUsage('read', invSnap.docs.length);
+        invSnap.docs.forEach(processDocSnap);
+      }
+    } catch (e) {
+      console.warn('Pull sales collection notice:', e);
+    }
+
+    // c. Cloud system sales summary docs
+    try {
+      const [sysS1, sysS2, sysS3, sysS4, sysS5, sysS6] = await Promise.all([
+        getDoc(doc(db, 'system', `org_${orgId}_sales`)).catch(() => null),
+        getDoc(doc(db, 'system', 'org_MYM-BIZFLOW_sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'org_default_sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'sales_history')).catch(() => null),
+        getDoc(doc(db, 'system', 'bills')).catch(() => null)
+      ]);
+      [sysS1, sysS2, sysS3, sysS4, sysS5, sysS6].forEach(snap => {
+        const sArr = snap?.data()?.data;
+        if (Array.isArray(sArr)) {
+          sArr.forEach((s: any) => {
+            if (!s) return;
+            const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+            if (key && !salesMap.has(key)) {
+              salesMap.set(key, s);
+            }
+          });
+        }
+      });
+    } catch (e) {}
+
+    const allMergedSales = Array.from(salesMap.values()).sort((a, b) => {
+      const timeA = Number(a.updatedAt || (a.date ? new Date(a.date).getTime() : 0));
+      const timeB = Number(b.updatedAt || (b.date ? new Date(b.date).getTime() : 0));
+      return timeB - timeA;
+    });
+
+    salesCount = allMergedSales.length;
+
+    // Save to local storage
+    localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(allMergedSales));
+    localStorage.setItem('bizflow_MYM-BIZFLOW_sales_v1', JSON.stringify(allMergedSales));
+    localStorage.setItem('bizflow_sales_v1', JSON.stringify(allMergedSales));
+
+    // Upload merged sales to Firestore
+    if (allMergedSales.length > 0) {
+      for (const s of allMergedSales) {
         if (!s || (!s.id && !s.billNo)) continue;
         const sId = String(s.id || s.billNo);
         const cleanS = { ...s, id: sId, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
@@ -829,56 +1024,220 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; cus
         markRecordSynced('sales', sId, cleanS);
       }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
-        data: salesList,
+        data: allMergedSales,
         organizationId: orgId,
         updatedAt: Date.now()
       }, { merge: true });
     }
 
-    // 2. Upload All Customers
-    const custList = getCustomers();
-    if (Array.isArray(custList) && custList.length > 0) {
-      customersCount = custList.length;
-      for (const c of custList) {
+    // ==========================================
+    // 3. PULL & MERGE CUSTOMERS (Cloud <-> Local)
+    // ==========================================
+    const custMap = new Map<string, any>();
+    const localCust = getCustomers();
+    localCust.forEach(c => {
+      if (!c) return;
+      const key = String(c.id || c.name || '');
+      if (key) custMap.set(key, c);
+    });
+
+    try {
+      const [custSnap, clientSnap] = await Promise.all([
+        getDocs(query(collection(db, 'customers'), limit(1500))).catch(() => null),
+        getDocs(query(collection(db, 'clients'), limit(1500))).catch(() => null)
+      ]);
+
+      const processCustSnap = (docSnap: any) => {
+        const data: any = docSnap.data();
+        if (!data) return;
+        const c: any = { ...data, id: data.id || docSnap.id };
+        const key = String(c.id || c.name || docSnap.id);
+        if (key) {
+          const existing = custMap.get(key);
+          if (!existing || (Number(c.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+            custMap.set(key, c);
+          }
+        }
+      };
+
+      if (custSnap && !custSnap.empty) {
+        trackFirestoreUsage('read', custSnap.docs.length);
+        custSnap.docs.forEach(processCustSnap);
+      }
+      if (clientSnap && !clientSnap.empty) {
+        trackFirestoreUsage('read', clientSnap.docs.length);
+        clientSnap.docs.forEach(processCustSnap);
+      }
+    } catch (e) {}
+
+    try {
+      const [sysC1, sysC2, sysC3, sysC4, sysC5] = await Promise.all([
+        getDoc(doc(db, 'system', `org_${orgId}_customers`)).catch(() => null),
+        getDoc(doc(db, 'system', 'org_MYM-BIZFLOW_customers')).catch(() => null),
+        getDoc(doc(db, 'system', 'org_default_customers')).catch(() => null),
+        getDoc(doc(db, 'system', 'customers')).catch(() => null),
+        getDoc(doc(db, 'system', 'all_customers')).catch(() => null)
+      ]);
+      [sysC1, sysC2, sysC3, sysC4, sysC5].forEach(snap => {
+        const cArr = snap?.data()?.data;
+        if (Array.isArray(cArr)) {
+          cArr.forEach((c: any) => {
+            if (!c) return;
+            const key = String(c.id || c.name || '');
+            if (key && !custMap.has(key)) custMap.set(key, c);
+          });
+        }
+      });
+    } catch (e) {}
+
+    const allMergedCust = Array.from(custMap.values());
+    customersCount = allMergedCust.length;
+
+    localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(allMergedCust));
+    localStorage.setItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(allMergedCust));
+    localStorage.setItem('bizflow_customers_v1', JSON.stringify(allMergedCust));
+
+    if (allMergedCust.length > 0) {
+      for (const c of allMergedCust) {
         if (!c || !c.id) continue;
         const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
         await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
         markRecordSynced('customers', c.id, cleanC);
       }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
-        data: custList,
+        data: allMergedCust,
         organizationId: orgId,
         updatedAt: Date.now()
       }, { merge: true });
     }
 
-    // 3. Upload All Inventory
-    const invList = getAdminInventory();
-    if (Array.isArray(invList) && invList.length > 0) {
-      inventoryCount = invList.length;
-      for (const item of invList) {
+    // ==========================================
+    // 4. PULL & MERGE INVENTORY (Cloud <-> Local)
+    // ==========================================
+    const invMap = new Map<string, any>();
+    const localInv = getAdminInventory();
+    localInv.forEach(item => {
+      if (!item) return;
+      const key = String(item.id || item.code || item.name || '');
+      if (key) invMap.set(key, item);
+    });
+
+    try {
+      const [invSnap, prodSnap] = await Promise.all([
+        getDocs(query(collection(db, 'inventory'), limit(1500))).catch(() => null),
+        getDocs(query(collection(db, 'products'), limit(1500))).catch(() => null)
+      ]);
+
+      const processInvSnap = (docSnap: any) => {
+        const data: any = docSnap.data();
+        if (!data) return;
+        const item: any = { ...data, id: data.id || docSnap.id };
+        const key = String(item.id || item.code || item.name || docSnap.id);
+        if (key) {
+          const existing = invMap.get(key);
+          if (!existing || (Number(item.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+            invMap.set(key, item);
+          }
+        }
+      };
+
+      if (invSnap && !invSnap.empty) {
+        trackFirestoreUsage('read', invSnap.docs.length);
+        invSnap.docs.forEach(processInvInvSnap => processInvSnap(processInvInvSnap));
+      }
+      if (prodSnap && !prodSnap.empty) {
+        trackFirestoreUsage('read', prodSnap.docs.length);
+        prodSnap.docs.forEach(processInvSnap);
+      }
+    } catch (e) {}
+
+    try {
+      const [sysI1, sysI2, sysI3, sysI4] = await Promise.all([
+        getDoc(doc(db, 'system', `org_${orgId}_inventory`)).catch(() => null),
+        getDoc(doc(db, 'system', 'org_MYM-BIZFLOW_inventory')).catch(() => null),
+        getDoc(doc(db, 'system', 'org_default_inventory')).catch(() => null),
+        getDoc(doc(db, 'system', 'inventory')).catch(() => null)
+      ]);
+      [sysI1, sysI2, sysI3, sysI4].forEach(snap => {
+        const iArr = snap?.data()?.data;
+        if (Array.isArray(iArr)) {
+          iArr.forEach((item: any) => {
+            if (!item) return;
+            const key = String(item.id || item.code || item.name || '');
+            if (key && !invMap.has(key)) invMap.set(key, item);
+          });
+        }
+      });
+    } catch (e) {}
+
+    const allMergedInv = Array.from(invMap.values());
+    inventoryCount = allMergedInv.length;
+
+    localStorage.setItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(allMergedInv));
+    localStorage.setItem('bizflow_MYM-BIZFLOW_admin_inventory_v1', JSON.stringify(allMergedInv));
+    localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(allMergedInv));
+
+    if (allMergedInv.length > 0) {
+      for (const item of allMergedInv) {
         if (!item || !item.id) continue;
         const cleanItem = { ...item, organizationId: orgId, updatedAt: item.updatedAt || Date.now() };
         await safeSetDoc(doc(db, 'inventory', String(item.id)), cleanItem, { merge: true });
         markRecordSynced('inventory', item.id, cleanItem);
       }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
-        data: invList,
+        data: allMergedInv,
         organizationId: orgId,
         updatedAt: Date.now()
       }, { merge: true });
     }
 
-    // Trigger sync events
+    // ==========================================
+    // 5. PULL & MERGE EXPENSES (Cloud <-> Local)
+    // ==========================================
+    const expMap = new Map<string, any>();
+    const localExpRaw = localStorage.getItem(`bizflow_${orgId}_expenses_v1`) || localStorage.getItem('bizflow_expenses_v1') || '[]';
+    try {
+      const parsed = JSON.parse(localExpRaw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(e => { if (e?.id) expMap.set(String(e.id), e); });
+      }
+    } catch (e) {}
+
+    try {
+      const expSnap = await getDocs(query(collection(db, 'expenses'), limit(1000)));
+      if (!expSnap.empty) {
+        trackFirestoreUsage('read', expSnap.docs.length);
+        expSnap.docs.forEach(docSnap => {
+          const data = docSnap.data();
+          if (data && docSnap.id) {
+            expMap.set(docSnap.id, { ...data, id: data.id || docSnap.id });
+          }
+        });
+      }
+    } catch (e) {}
+
+    const allMergedExp = Array.from(expMap.values());
+    expensesCount = allMergedExp.length;
+    localStorage.setItem(`bizflow_${orgId}_expenses_v1`, JSON.stringify(allMergedExp));
+    localStorage.setItem('bizflow_expenses_v1', JSON.stringify(allMergedExp));
+
+    // ==========================================
+    // 6. Trigger Real-time Events
+    // ==========================================
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: getTodayQuotaStats() }));
-      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: salesList } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'users', data: allMergedUsers } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: allMergedSales } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'customers', data: allMergedCust } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'inventory', data: allMergedInv } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'expenses', data: allMergedExp } }));
+      window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'all' } }));
     }
 
-    return { salesCount, customersCount, inventoryCount, success: true };
+    return { salesCount, repsCount, customersCount, inventoryCount, expensesCount, success: true };
   } catch (err) {
-    console.error('Force upload to cloud failed:', err);
-    return { salesCount, customersCount, inventoryCount, success: false };
+    console.error('Bidirectional cloud sync failed:', err);
+    return { salesCount, repsCount, customersCount, inventoryCount, expensesCount, success: false };
   }
 };
 

@@ -506,9 +506,12 @@ export default function App() {
 
     // Reconnect is the only automatic network trigger. Focus, visibility and
     // periodic polling caused unnecessary reads whenever the phone woke up.
-    // Trigger initial background push for any unsynced local data
-    import('./lib/sync').then(({ pushUnsyncedLocalDataToCloud }) => {
+    // Trigger initial background sync to download all bills, customers & inventory from Firebase
+    import('./lib/sync').then(({ forceUploadAllToCloud, pushUnsyncedLocalDataToCloud }) => {
       pushUnsyncedLocalDataToCloud().catch(() => null);
+      setTimeout(() => {
+        forceUploadAllToCloud().catch(() => null);
+      }, 500);
     });
 
     const handleLocalDataSync = () => {
