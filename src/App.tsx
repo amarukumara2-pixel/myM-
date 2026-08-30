@@ -504,27 +504,17 @@ export default function App() {
       }
     };
 
-    // Reconnect is the only automatic network trigger. Focus, visibility and
-    // periodic polling caused unnecessary reads whenever the phone woke up.
-    // Trigger initial background sync to download all bills, customers & inventory from Firebase
-    import('./lib/sync').then(({ forceUploadAllToCloud, pushUnsyncedLocalDataToCloud }) => {
-      pushUnsyncedLocalDataToCloud().catch(() => null);
+    // Reconnect is the only automatic network trigger.
+    // Trigger initial background sync to download latest state from Firebase once on mount
+    import('./lib/sync').then(({ forceUploadAllToCloud }) => {
       setTimeout(() => {
         forceUploadAllToCloud().catch(() => null);
-      }, 500);
+      }, 1000);
     });
 
-    const handleLocalDataSync = () => {
-      import('./lib/sync').then(({ pushUnsyncedLocalDataToCloud }) => {
-        pushUnsyncedLocalDataToCloud().catch(() => null);
-      });
-    };
-
     window.addEventListener('online', triggerSyncQueue);
-    window.addEventListener('bizflow_sync', handleLocalDataSync);
     return () => {
       window.removeEventListener('online', triggerSyncQueue);
-      window.removeEventListener('bizflow_sync', handleLocalDataSync);
     };
   }, []);
 

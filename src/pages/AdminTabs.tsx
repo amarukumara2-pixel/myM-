@@ -5251,10 +5251,22 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
+  const reloadData = () => {
+    setSales(getSalesHistory());
+    setCustomers(getCustomers());
+  };
+
   useEffect(() => {
+    reloadData();
+    // Auto-sync from cloud if list is empty or to ensure latest data
+    import('../lib/sync').then(({ forceUploadAllToCloud }) => {
+      forceUploadAllToCloud().then(() => {
+        reloadData();
+      }).catch(() => null);
+    });
+
     const handleSync = () => {
-      setSales(getSalesHistory());
-      setCustomers(getCustomers());
+      reloadData();
     };
     window.addEventListener('bizflow_sync', handleSync);
     window.addEventListener('storage', handleSync);

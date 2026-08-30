@@ -156,24 +156,18 @@ export function trackFirestoreUsage(type: 'read' | 'write' | 'delete', count: nu
   const stats = getTodayQuotaStats();
   if (type === 'read') {
     stats.reads += count;
-    pendingQuotaUpdates.reads += count;
   }
   if (type === 'write') {
     stats.writes += count;
-    pendingQuotaUpdates.writes += count;
   }
   if (type === 'delete') {
     stats.deletes += count;
-    pendingQuotaUpdates.deletes += count;
   }
   stats.lastUpdated = Date.now();
   try {
     localStorage.setItem('bizflow_firebase_quota_today_v1', JSON.stringify(stats));
     window.dispatchEvent(new CustomEvent('bizflow_quota_updated', { detail: stats }));
   } catch (e) {}
-
-  if (quotaFlushTimer) clearTimeout(quotaFlushTimer);
-  quotaFlushTimer = setTimeout(flushQuotaToCloud, 2000);
 }
 
 export async function fetchLiveQuotaStatsFromCloud(): Promise<FirebaseDailyQuotaStats> {
@@ -626,14 +620,12 @@ export const autoSyncUnsyncedData = async () => {
             hasUpdatedSales = true;
           }
         }
-        // Save organization summary doc as well
-        await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
-          data: salesList,
-          organizationId: orgId,
-          updatedAt: Date.now()
-        }, { merge: true });
-
         if (hasUpdatedSales) {
+          await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
+            data: salesList,
+            organizationId: orgId,
+            updatedAt: Date.now()
+          }, { merge: true });
           localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(salesList));
           localStorage.setItem('bizflow_sales_v1', JSON.stringify(salesList));
           broadcastSync('sales', salesList);
@@ -659,13 +651,13 @@ export const autoSyncUnsyncedData = async () => {
             hasUpdatedCust = true;
           }
         }
-        await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
-          data: custList,
-          organizationId: orgId,
-          updatedAt: Date.now()
-        }, { merge: true });
 
         if (hasUpdatedCust) {
+          await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
+            data: custList,
+            organizationId: orgId,
+            updatedAt: Date.now()
+          }, { merge: true });
           localStorage.setItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(custList));
           localStorage.setItem('bizflow_customers_v1', JSON.stringify(custList));
           broadcastSync('customers', custList);
@@ -679,6 +671,7 @@ export const autoSyncUnsyncedData = async () => {
     try {
       const invList = getAdminInventory();
       if (Array.isArray(invList) && invList.length > 0) {
+        let hasUpdatedInv = false;
         for (const item of invList) {
           if (!item || !item.id) continue;
           const itemId = String(item.id);
@@ -686,13 +679,16 @@ export const autoSyncUnsyncedData = async () => {
             const cleanItem = { ...item, organizationId: orgId, updatedAt: item.updatedAt || Date.now() };
             await safeSetDoc(doc(db, 'inventory', itemId), cleanItem, { merge: true });
             markRecordSynced('inventory', itemId, cleanItem);
+            hasUpdatedInv = true;
           }
         }
-        await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
-          data: invList,
-          organizationId: orgId,
-          updatedAt: Date.now()
-        }, { merge: true });
+        if (hasUpdatedInv) {
+          await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
+            data: invList,
+            organizationId: orgId,
+            updatedAt: Date.now()
+          }, { merge: true });
+        }
       }
     } catch (e) {
       console.warn('Auto-sync inventory notice:', e);
@@ -913,13 +909,8 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     localStorage.setItem('bizflow_MYM-BIZFLOW_users_v2', JSON.stringify(allMergedUsers));
     localStorage.setItem('bizflow_users_v2', JSON.stringify(allMergedUsers));
 
-    // Upload merged users to Firestore
+    // Save merged users to system doc in Firestore (1 write)
     if (allMergedUsers.length > 0) {
-      for (const u of allMergedUsers) {
-        if (!u || !u.id) continue;
-        const cleanU = { ...u, organizationId: orgId, updatedAt: u.updatedAt || Date.now() };
-        await safeSetDoc(doc(db, 'users', String(u.id)), cleanU, { merge: true });
-      }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_users`), {
         data: allMergedUsers,
         organizationId: orgId,
@@ -1014,15 +1005,8 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     localStorage.setItem('bizflow_MYM-BIZFLOW_sales_v1', JSON.stringify(allMergedSales));
     localStorage.setItem('bizflow_sales_v1', JSON.stringify(allMergedSales));
 
-    // Upload merged sales to Firestore
+    // Upload merged sales to system doc (1 single write)
     if (allMergedSales.length > 0) {
-      for (const s of allMergedSales) {
-        if (!s || (!s.id && !s.billNo)) continue;
-        const sId = String(s.id || s.billNo);
-        const cleanS = { ...s, id: sId, organizationId: orgId, updatedAt: s.updatedAt || Date.now() };
-        await safeSetDoc(doc(db, 'sales', sId), cleanS, { merge: true });
-        markRecordSynced('sales', sId, cleanS);
-      }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_sales`), {
         data: allMergedSales,
         organizationId: orgId,
@@ -1098,12 +1082,6 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     localStorage.setItem('bizflow_customers_v1', JSON.stringify(allMergedCust));
 
     if (allMergedCust.length > 0) {
-      for (const c of allMergedCust) {
-        if (!c || !c.id) continue;
-        const cleanC = { ...c, organizationId: orgId, updatedAt: c.updatedAt || Date.now() };
-        await safeSetDoc(doc(db, 'customers', String(c.id)), cleanC, { merge: true });
-        markRecordSynced('customers', c.id, cleanC);
-      }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_customers`), {
         data: allMergedCust,
         organizationId: orgId,
@@ -1143,7 +1121,7 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
 
       if (invSnap && !invSnap.empty) {
         trackFirestoreUsage('read', invSnap.docs.length);
-        invSnap.docs.forEach(processInvInvSnap => processInvSnap(processInvInvSnap));
+        invSnap.docs.forEach(processInvSnap);
       }
       if (prodSnap && !prodSnap.empty) {
         trackFirestoreUsage('read', prodSnap.docs.length);
@@ -1178,12 +1156,6 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     localStorage.setItem('bizflow_admin_inventory_v1', JSON.stringify(allMergedInv));
 
     if (allMergedInv.length > 0) {
-      for (const item of allMergedInv) {
-        if (!item || !item.id) continue;
-        const cleanItem = { ...item, organizationId: orgId, updatedAt: item.updatedAt || Date.now() };
-        await safeSetDoc(doc(db, 'inventory', String(item.id)), cleanItem, { merge: true });
-        markRecordSynced('inventory', item.id, cleanItem);
-      }
       await safeSetDoc(doc(db, 'system', `org_${orgId}_inventory`), {
         data: allMergedInv,
         organizationId: orgId,

@@ -680,16 +680,24 @@ export default function RepDashboard() {
           return items;
         };
 
+        const isRepMatch = (s: any) => {
+          if (!s) return false;
+          if (freshRep.role === 'admin' || s.issuedByAdmin) return true;
+          if (!s.repId && !s.repName && !s.salesPerson && !s.rep) return true;
+          if (s.repId === freshRep.id || s.coRepId === freshRep.id) return true;
+          const myName = (freshRep.name || '').trim().toLowerCase();
+          const sRepName = (s.repName || s.salesPerson || s.rep || s.repId || '').trim().toLowerCase();
+          return myName.length > 0 && sRepName.length > 0 && (sRepName === myName || sRepName.includes(myName) || myName.includes(sRepName));
+        };
+
         const loadInitialData = () => {
           // Load sales from local storage/defaults first
           const storedSales = getSalesHistory();
-          const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
           setSalesData(storedSales.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
 
           // Fetch sales for history from cloud
           fetchTableData('sales').then(data => {
             if (data && data.length > 0) {
-              const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
               setSalesData(data.filter(isRepMatch).sort((a:any, b:any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
             }
           });
@@ -755,12 +763,10 @@ export default function RepDashboard() {
               try {
                 const sData = JSON.parse(storedSalesStr);
                 if (Array.isArray(sData)) {
-                  const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
                   setSalesData(sData.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
                 }
               } catch (err) {}
             } else if (e.detail?.data && Array.isArray(e.detail.data) && table === 'sales') {
-              const isRepMatch = (s: any) => freshRep.role === 'admin' || !s.repId || s.repId === freshRep.id || s.coRepId === freshRep.id || s.issuedByAdmin;
               setSalesData(e.detail.data.filter(isRepMatch).sort((a: any, b: any) => new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()));
             }
           }

@@ -2351,6 +2351,59 @@ export const syncAllFromCloud = async () => {
         safeSetItem(`bizflow_${orgId}_settings`, JSON.stringify(settingsDoc.data()));
       }
     } catch (e) {}
+
+    // 5.1 Fetch sales summary document
+    try {
+      let salesDoc = await getDoc(doc(db, 'system', `org_${orgId}_sales`));
+      if (!salesDoc.exists() && orgId !== 'MYM-BIZFLOW') {
+        salesDoc = await getDoc(doc(db, 'system', `org_MYM-BIZFLOW_sales`));
+      }
+      if (!salesDoc.exists() && orgId !== 'default') {
+        salesDoc = await getDoc(doc(db, 'system', `org_default_sales`));
+      }
+      if (salesDoc.exists() && salesDoc.data()?.data && Array.isArray(salesDoc.data().data)) {
+        const sArr = salesDoc.data().data;
+        const currentSales = getSalesHistory();
+        const salesMap = new Map<string, any>();
+        currentSales.forEach(s => {
+          const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+          if (key) salesMap.set(key, s);
+        });
+        sArr.forEach((s: any) => {
+          const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+          if (key && !salesMap.has(key)) salesMap.set(key, s);
+        });
+        const mergedSales = Array.from(salesMap.values());
+        safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(mergedSales));
+        safeSetItem('bizflow_MYM-BIZFLOW_sales_v1', JSON.stringify(mergedSales));
+        safeSetItem('bizflow_sales_v1', JSON.stringify(mergedSales));
+      }
+    } catch (e) {}
+
+    // 5.2 Fetch customers summary document
+    try {
+      let custDoc = await getDoc(doc(db, 'system', `org_${orgId}_customers`));
+      if (!custDoc.exists() && orgId !== 'MYM-BIZFLOW') {
+        custDoc = await getDoc(doc(db, 'system', `org_MYM-BIZFLOW_customers`));
+      }
+      if (custDoc.exists() && custDoc.data()?.data && Array.isArray(custDoc.data().data)) {
+        const cArr = custDoc.data().data;
+        const currentCust = getCustomers();
+        const custMap = new Map<string, any>();
+        currentCust.forEach(c => {
+          const key = String(c.id || c.name || '');
+          if (key) custMap.set(key, c);
+        });
+        cArr.forEach((c: any) => {
+          const key = String(c.id || c.name || '');
+          if (key && !custMap.has(key)) custMap.set(key, c);
+        });
+        const mergedCust = Array.from(custMap.values());
+        safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(mergedCust));
+        safeSetItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(mergedCust));
+        safeSetItem('bizflow_customers_v1', JSON.stringify(mergedCust));
+      }
+    } catch (e) {}
     
     // 6. Fetch single targeted system doc for Admin Inventory
     try {
@@ -2406,7 +2459,10 @@ export const syncAllFromCloud = async () => {
           salesMap.set(key, s);
         }
       });
-      saveSalesHistory(Array.from(salesMap.values()));
+      const mergedSales = Array.from(salesMap.values());
+      safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(mergedSales));
+      safeSetItem('bizflow_MYM-BIZFLOW_sales_v1', JSON.stringify(mergedSales));
+      safeSetItem('bizflow_sales_v1', JSON.stringify(mergedSales));
     }
 
     if (Array.isArray(userColData) && userColData.length > 0) {
@@ -2423,7 +2479,9 @@ export const syncAllFromCloud = async () => {
         }
       });
       const mergedUsers = Array.from(userMap.values());
-      saveUsers(mergedUsers);
+      safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(mergedUsers));
+      safeSetItem('bizflow_MYM-BIZFLOW_users_v2', JSON.stringify(mergedUsers));
+      safeSetItem('bizflow_users_v2', JSON.stringify(mergedUsers));
     }
 
     if (Array.isArray(customers) && customers.length > 0) {
@@ -2437,7 +2495,10 @@ export const syncAllFromCloud = async () => {
         const key = String(c.id || c.name || Math.random());
         if (!custMap.has(key)) custMap.set(key, c);
       });
-      saveCustomers(Array.from(custMap.values()));
+      const mergedCust = Array.from(custMap.values());
+      safeSetItem(`bizflow_${orgId}_customers_v1`, JSON.stringify(mergedCust));
+      safeSetItem('bizflow_MYM-BIZFLOW_customers_v1', JSON.stringify(mergedCust));
+      safeSetItem('bizflow_customers_v1', JSON.stringify(mergedCust));
     }
 
     if (Array.isArray(suppliers) && suppliers.length > 0) {
@@ -2451,13 +2512,18 @@ export const syncAllFromCloud = async () => {
         const key = String(s.id || s.name || Math.random());
         if (!suppMap.has(key)) suppMap.set(key, s);
       });
-      saveSuppliers(Array.from(suppMap.values()));
+      const mergedSupp = Array.from(suppMap.values());
+      safeSetItem(`bizflow_${orgId}_suppliers_v1`, JSON.stringify(mergedSupp));
+      safeSetItem('bizflow_MYM-BIZFLOW_suppliers_v1', JSON.stringify(mergedSupp));
+      safeSetItem('bizflow_suppliers_v1', JSON.stringify(mergedSupp));
     }
 
     if (Array.isArray(invColData) && invColData.length > 0) {
       const existing = getAdminInventory();
       if (!existing || existing.length === 0) {
-        saveAdminInventory(invColData);
+        safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(invColData));
+        safeSetItem('bizflow_MYM-BIZFLOW_admin_inventory_v1', JSON.stringify(invColData));
+        safeSetItem('bizflow_admin_inventory_v1', JSON.stringify(invColData));
       }
     }
 
