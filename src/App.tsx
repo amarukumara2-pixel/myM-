@@ -7,7 +7,7 @@ import RepDashboard from './pages/RepDashboard';
 import SuperAdmin from './pages/SuperAdmin';
 import RegisterOrg from './pages/RegisterOrg';
 import AnimatedLogo from './components/Logo';
-import { getUsers, SystemUser, getActiveOrgId, setActiveOrgId, getOrganizationSettings } from './lib/store';
+import { getUsers, SystemUser, getActiveOrgId, setActiveOrgId, getOrganizationSettings, purgeNimalKamal } from './lib/store';
 import { isBiometricSupported, hasBiometricRegistered, verifyBiometric } from './lib/biometrics';
 // import { processSyncQueue } from './lib/sync'; // Removed static import
 import { FireworksBackground } from './components/Fireworks';
@@ -49,6 +49,7 @@ function Home() {
   useEffect(() => {
     const loadData = () => {
       try {
+        purgeNimalKamal();
         setUsers(getUsers());
       } catch (e) {
         console.error("Error initializing users:", e);
@@ -98,6 +99,7 @@ function Home() {
   };
 
   const handleRepClick = () => {
+    setUsers(getUsers());
     setSelectedRole('rep');
     setSelectedRep(null);
     setPin('');
@@ -106,6 +108,7 @@ function Home() {
   };
 
   const handleStaffClick = () => {
+    setUsers(getUsers());
     setSelectedRole('other');
     setSelectedRep(null);
     setPin('');

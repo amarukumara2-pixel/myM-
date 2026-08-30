@@ -992,16 +992,29 @@ export default function RepDashboard() {
   const [biometricMsg, setBiometricMsg] = useState('');
 
   useEffect(() => {
+    const refreshReps = () => {
+      const list = getUsers().filter(u => u.role === 'rep' || u.role === 'admin' || u.role === 'super_admin');
+      setRepsListForLogin(list);
+    };
+
     if (!currentRep) {
-      setRepsListForLogin(getUsers().filter(u => u.role === 'rep' || u.role === 'admin' || u.role === 'super_admin'));
+      refreshReps();
       if (navigator.onLine) {
         import('../lib/store').then(mod => {
           mod.syncAllFromCloud().then(() => {
-            setRepsListForLogin(getUsers().filter(u => u.role === 'rep' || u.role === 'admin' || u.role === 'super_admin'));
+            refreshReps();
           });
         });
       }
     }
+
+    const handleSync = (e: any) => {
+      if (e.detail?.table === 'users' && !currentRep) {
+        refreshReps();
+      }
+    };
+    window.addEventListener('bizflow_sync', handleSync);
+    return () => window.removeEventListener('bizflow_sync', handleSync);
   }, [currentRep]);
 
   if (!currentRep) {

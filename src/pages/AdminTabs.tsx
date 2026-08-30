@@ -5672,29 +5672,90 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
 
 // --- 19. DEPLOY TAB ---
 export function DeployTab() {
+  const currentUrl = window.location.origin;
+
   return (
-    <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm max-w-xl mx-auto space-y-6 text-center">
-      <div className="p-4 bg-blue-50 rounded-full w-16 h-16 flex items-center justify-center mx-auto text-blue-600">
-        <Settings size={32} className="animate-spin duration-[4s]" />
-      </div>
+    <div className="max-w-3xl mx-auto space-y-6">
+      <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm space-y-6">
+        <div className="flex items-center gap-4 border-b border-slate-100 pb-6">
+          <div className="p-3 bg-blue-50 rounded-2xl text-blue-600">
+            <Settings size={28} />
+          </div>
+          <div>
+            <h3 className="font-display text-2xl font-bold text-slate-800">යෙදුම Deploy & Install කරගැනීම (Deployment Guide)</h3>
+            <p className="text-slate-500 text-sm">BizFlow Pro යෙදුම සජීවීව (Live) ක්‍රියාත්මක කිරීමට සහ ස්ථාපනය (Install) කිරීමට පහත පියවර අනුගමනය කරන්න.</p>
+          </div>
+        </div>
 
-      <div className="space-y-2">
-        <h3 className="font-display text-2xl font-bold text-slate-800">Deployment Console</h3>
-        <p className="text-slate-500 text-sm">Trigger cloud redeployments, Firestore rules updates, or database backups.</p>
-      </div>
+        {/* Step 1: AI Studio Deploy */}
+        <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50/50 rounded-2xl border border-blue-100 space-y-3">
+          <div className="flex items-center gap-2 text-blue-800 font-bold text-base">
+            <span className="w-7 h-7 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm">1</span>
+            <span>Cloud Run හරහා සෘජුවම Deploy කිරීම (Direct Cloud Deploy)</span>
+          </div>
+          <p className="text-slate-600 text-sm pl-9">
+            Google AI Studio හි ඉහළ දකුණු කෙළවරේ (Top Right) ඇති <strong>"Deploy"</strong> හෝ <strong>"Share"</strong> බොත්තම ක්ලික් කරන්න. එවිට ඔබගේ යෙදුම Google Cloud Run මත 24/7 ක්‍රියාත්මක වන ස්ථිර Live Web Link එකක් බවට පත්වේ.
+          </p>
+        </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <button className="p-4 bg-slate-50 border border-slate-100 rounded-2xl hover:bg-slate-100/50 transition-all text-slate-700 font-bold text-sm">
-          Backup Databases
-        </button>
-        <button className="p-4 bg-slate-50 border border-slate-100 rounded-2xl hover:bg-slate-100/50 transition-all text-slate-700 font-bold text-sm">
-          Optimize Indexing
-        </button>
-      </div>
+        {/* Step 2: Install as Mobile App */}
+        <div className="p-5 bg-gradient-to-br from-emerald-50 to-teal-50/50 rounded-2xl border border-emerald-100 space-y-3">
+          <div className="flex items-center gap-2 text-emerald-800 font-bold text-base">
+            <span className="w-7 h-7 bg-emerald-600 text-white rounded-full flex items-center justify-center text-sm">2</span>
+            <span>දුරකථනයට හෝ PC එකට Mobile App (PWA) ලෙස Install කරගැනීම</span>
+          </div>
+          <p className="text-slate-600 text-sm pl-9">
+            Live URL එක Chrome / Safari මඟින් විවෘත කර Browser Menu එකෙන් <strong>"Install App"</strong> හෝ <strong>"Add to Home Screen"</strong> තෝරන්න. එවිට Google Play Store ඇප් එකක් මෙන් කිසිදු බ්‍රවුසර බාධාවකින් තොරව ක්‍රියාත්මක වේ.
+          </p>
+          <div className="pl-9 flex gap-2">
+            <button 
+              onClick={() => {
+                navigator.clipboard.writeText(currentUrl);
+                alert('App Live Link Copied: ' + currentUrl);
+              }}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm shadow-emerald-500/20"
+            >
+              Live URL එක Copy කරගන්න
+            </button>
+          </div>
+        </div>
 
-      <button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-blue-500/15">
-        Push Firestore Security Rules
-      </button>
+        {/* Step 3: Export Code */}
+        <div className="p-5 bg-gradient-to-br from-amber-50 to-orange-50/50 rounded-2xl border border-amber-100 space-y-3">
+          <div className="flex items-center gap-2 text-amber-800 font-bold text-base">
+            <span className="w-7 h-7 bg-amber-600 text-white rounded-full flex items-center justify-center text-sm">3</span>
+            <span>Source Code එක Export කර වෙනත් Server එකක Host කිරීම</span>
+          </div>
+          <p className="text-slate-600 text-sm pl-9">
+            AI Studio හි <strong>Settings &gt; Export to GitHub / Download as ZIP</strong> මඟින් සම්පූර්ණ Source Code එක ලබාගෙන Vercel, Netlify, Firebase Hosting, VPS හෝ Docker Container එකක පහසුවෙන් Host කරගත හැක.
+          </p>
+        </div>
+
+        {/* Quick Operations */}
+        <div className="pt-4 border-t border-slate-100">
+          <h4 className="font-bold text-slate-700 text-sm mb-3">Cloud දත්ත හා Cache කළමනාකරණය</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <button 
+              onClick={() => {
+                import('../lib/sync').then(m => m.forceUploadAllToCloud()).then(() => {
+                  alert('Cloud Database Sync Completed Successfully!');
+                });
+              }}
+              className="p-3 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-all text-slate-700 font-bold text-xs"
+            >
+              🔄 Database Cloud Sync
+            </button>
+            <button 
+              onClick={() => {
+                import('../lib/cacheUtils').then(m => m.clearAppCache());
+              }}
+              className="p-3 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-all text-slate-700 font-bold text-xs"
+            >
+              🧹 Clear Cache & Reload
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -252,7 +252,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   }
 }
 
-import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory, getUsers } from './store';
+import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory, getUsers, isMirigamaOrGalewelaOrAdmin, isSaleKeptForMirigamaGalewelaOrAdmin } from './store';
 
 export interface SyncPayload {
   id: string;
@@ -827,8 +827,10 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     const localUsers = getUsers();
     localUsers.forEach(u => {
       if (!u) return;
-      const key = u.id || `user_${u.name}_${u.role}`;
-      userMap.set(key, u);
+      if (isMirigamaOrGalewelaOrAdmin(u)) {
+        const key = u.id || `user_${u.name}_${u.role}`;
+        userMap.set(key, u);
+      }
     });
 
     // b. Cloud users & reps collections
@@ -843,12 +845,16 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
           const data: any = docSnap.data();
           if (!data) return;
           const u: any = { ...data, id: data.id || docSnap.id };
-          const key = u.id || `user_${u.name}_${u.role}`;
-          if (key) {
-            const existing = userMap.get(key);
-            if (!existing || (Number(u.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
-              userMap.set(key, u);
+          if (isMirigamaOrGalewelaOrAdmin(u)) {
+            const key = u.id || `user_${u.name}_${u.role}`;
+            if (key) {
+              const existing = userMap.get(key);
+              if (!existing || (Number(u.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+                userMap.set(key, u);
+              }
             }
+          } else if (docSnap.id.includes('chamod') || docSnap.id.includes('nimal') || docSnap.id.includes('kamal')) {
+            safeDeleteDoc(doc(db, 'users', docSnap.id));
           }
         });
       }
@@ -858,9 +864,13 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
           const data: any = docSnap.data();
           if (!data) return;
           const u: any = { ...data, id: data.id || docSnap.id, role: data.role || 'rep' };
-          const key = u.id || `user_${u.name}_${u.role}`;
-          if (key && !userMap.has(key)) {
-            userMap.set(key, u);
+          if (isMirigamaOrGalewelaOrAdmin(u)) {
+            const key = u.id || `user_${u.name}_${u.role}`;
+            if (key && !userMap.has(key)) {
+              userMap.set(key, u);
+            }
+          } else if (docSnap.id.includes('chamod') || docSnap.id.includes('nimal') || docSnap.id.includes('kamal')) {
+            safeDeleteDoc(doc(db, 'reps', docSnap.id));
           }
         });
       }
@@ -882,9 +892,11 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
         if (Array.isArray(uArr)) {
           uArr.forEach((u: any) => {
             if (!u) return;
-            const key = u.id || `user_${u.name}_${u.role}`;
-            if (key && !userMap.has(key)) {
-              userMap.set(key, u);
+            if (isMirigamaOrGalewelaOrAdmin(u)) {
+              const key = u.id || `user_${u.name}_${u.role}`;
+              if (key && !userMap.has(key)) {
+                userMap.set(key, u);
+              }
             }
           });
         }
@@ -892,12 +904,36 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     } catch (e) {}
 
     // Make sure default admin exists if user map is empty
-    if (userMap.size === 0) {
+    if (!Array.from(userMap.values()).some(u => u.role === 'admin')) {
       userMap.set(`admin_${orgId}`, {
         id: `admin_${orgId}`,
         name: 'Admin',
         pin: '1993',
         role: 'admin',
+        organizationId: orgId
+      });
+    }
+
+    // Ensure Mirigama Rep exists
+    if (!Array.from(userMap.values()).some(u => u.role === 'rep' && (String(u.name || '').toLowerCase().includes('mirigama') || String(u.activeArea || '').toLowerCase().includes('mirigama') || String(u.name || '').includes('මීරිගම') || String(u.activeArea || '').includes('මීරිගම')))) {
+      userMap.set('rep_mirigama', {
+        id: 'rep_mirigama',
+        name: 'Mirigama Rep',
+        pin: '1234',
+        role: 'rep',
+        activeArea: 'Mirigama',
+        organizationId: orgId
+      });
+    }
+
+    // Ensure Galewela Rep exists
+    if (!Array.from(userMap.values()).some(u => u.role === 'rep' && (String(u.name || '').toLowerCase().includes('galewela') || String(u.activeArea || '').toLowerCase().includes('galewela') || String(u.name || '').includes('ගලේවෙල') || String(u.activeArea || '').includes('ගලේවෙල')))) {
+      userMap.set('rep_galewela', {
+        id: 'rep_galewela',
+        name: 'Galewela Rep',
+        pin: '1234',
+        role: 'rep',
+        activeArea: 'Galewela',
         organizationId: orgId
       });
     }
@@ -927,8 +963,10 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     const localSales = getSalesHistory();
     localSales.forEach(s => {
       if (!s) return;
-      const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
-      if (key) salesMap.set(key, s);
+      if (isSaleKeptForMirigamaGalewelaOrAdmin(s)) {
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+        if (key) salesMap.set(key, s);
+      }
     });
 
     // b. Cloud sales / bills / invoices collections
@@ -943,12 +981,16 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
         const data: any = docSnap.data();
         if (!data) return;
         const s: any = { ...data, id: data.id || docSnap.id };
-        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || docSnap.id);
-        if (key) {
-          const existing = salesMap.get(key);
-          if (!existing || (Number(s.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
-            salesMap.set(key, s);
+        if (isSaleKeptForMirigamaGalewelaOrAdmin(s)) {
+          const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || docSnap.id);
+          if (key) {
+            const existing = salesMap.get(key);
+            if (!existing || (Number(s.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+              salesMap.set(key, s);
+            }
           }
+        } else {
+          safeDeleteDoc(doc(db, 'sales', docSnap.id));
         }
       };
 
@@ -983,9 +1025,11 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
         if (Array.isArray(sArr)) {
           sArr.forEach((s: any) => {
             if (!s) return;
-            const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
-            if (key && !salesMap.has(key)) {
-              salesMap.set(key, s);
+            if (isSaleKeptForMirigamaGalewelaOrAdmin(s)) {
+              const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+              if (key && !salesMap.has(key)) {
+                salesMap.set(key, s);
+              }
             }
           });
         }

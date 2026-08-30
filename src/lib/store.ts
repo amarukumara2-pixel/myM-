@@ -121,15 +121,111 @@ export const DEFAULT_USERS: SystemUser[] = [
     pin: '1993', 
     role: 'admin',
     organizationId: 'MYM-BIZFLOW' 
+  },
+  {
+    id: 'rep_mirigama',
+    name: 'Mirigama Rep',
+    pin: '1234',
+    role: 'rep',
+    activeArea: 'Mirigama',
+    organizationId: 'MYM-BIZFLOW'
+  },
+  {
+    id: 'rep_galewela',
+    name: 'Galewela Rep',
+    pin: '1234',
+    role: 'rep',
+    activeArea: 'Galewela',
+    organizationId: 'MYM-BIZFLOW'
   }
 ];
+
+export const isExcludedUser = (u: any): boolean => {
+  if (!u) return true;
+  const name = String(u.name || '').toLowerCase();
+  const id = String(u.id || '').toLowerCase();
+  const area = String(u.activeArea || u.area || '').toLowerCase();
+
+  // Exclude deleted sample reps: Nimal, Kamal, Chamod
+  if (
+    name.includes('nimal') || name.includes('නිමාල්') || id.includes('nimal') ||
+    name.includes('kamal') || name.includes('කමල්') || id.includes('kamal') ||
+    name.includes('chamod') || name.includes('චමෝද්') || id.includes('chamod') ||
+    area.includes('chamod')
+  ) {
+    return true;
+  }
+  return false;
+};
+
+export const isMirigamaOrGalewelaOrAdmin = (u: any): boolean => {
+  if (!u) return false;
+  return !isExcludedUser(u);
+};
+
+export const isSaleKeptForMirigamaGalewelaOrAdmin = (s: any): boolean => {
+  if (!s) return false;
+  const repIdStr = String(s.repId || '').toLowerCase();
+  const repNameStr = String(s.repName || s.salesPerson || s.rep || '').toLowerCase();
+  const areaStr = String(s.area || s.route || s.activeArea || '').toLowerCase();
+
+  // Explicitly exclude deleted sample reps: Nimal, Kamal, Chamod
+  if (
+    repIdStr.includes('nimal') || repNameStr.includes('nimal') || repNameStr.includes('නිමාල්') ||
+    repIdStr.includes('kamal') || repNameStr.includes('kamal') || repNameStr.includes('කමල්') ||
+    repIdStr.includes('chamod') || repNameStr.includes('chamod') || repNameStr.includes('චමෝද්') ||
+    areaStr.includes('chamod')
+  ) {
+    return false;
+  }
+
+  return true;
+};
 
 export const isSamplePerson = (_str: string) => {
   return false;
 };
 
 export const purgeNimalKamal = () => {
-  // No-op to preserve user created reps
+  // Purge only deleted sample reps (Nimal, Kamal, Chamod) and their bills
+  const orgId = getActiveOrgId();
+  const validUsers = getUsers().filter(u => !isExcludedUser(u));
+  saveUsers(validUsers);
+
+  const validSales = getSalesHistory().filter(isSaleKeptForMirigamaGalewelaOrAdmin);
+  saveSalesHistory(validSales);
+
+  Promise.all([import('firebase/firestore'), import('./sync')]).then(async ([ {doc, collection, getDocs}, {db, safeDeleteDoc} ]) => {
+    try {
+      safeDeleteDoc(doc(db, 'users', 'chamod'));
+      safeDeleteDoc(doc(db, 'users', 'rep_chamod'));
+      safeDeleteDoc(doc(db, 'reps', 'chamod'));
+      safeDeleteDoc(doc(db, 'reps', 'rep_chamod'));
+      safeDeleteDoc(doc(db, 'users', 'nimal'));
+      safeDeleteDoc(doc(db, 'users', 'rep_nimal'));
+      safeDeleteDoc(doc(db, 'reps', 'nimal'));
+      safeDeleteDoc(doc(db, 'reps', 'rep_nimal'));
+      safeDeleteDoc(doc(db, 'users', 'kamal'));
+      safeDeleteDoc(doc(db, 'users', 'rep_kamal'));
+      safeDeleteDoc(doc(db, 'reps', 'kamal'));
+      safeDeleteDoc(doc(db, 'reps', 'rep_kamal'));
+
+      const snapUsers = await getDocs(collection(db, 'users'));
+      snapUsers.forEach(d => {
+        const data = d.data();
+        if (isExcludedUser({ ...data, id: d.id })) {
+          safeDeleteDoc(doc(db, 'users', d.id));
+        }
+      });
+      const snapReps = await getDocs(collection(db, 'reps'));
+      snapReps.forEach(d => {
+        const data = d.data();
+        if (isExcludedUser({ ...data, id: d.id })) {
+          safeDeleteDoc(doc(db, 'reps', d.id));
+        }
+      });
+    } catch (e) {}
+  });
 };
 
 export const getUsers = (): SystemUser[] => {
@@ -155,9 +251,11 @@ export const getUsers = (): SystemUser[] => {
         if (Array.isArray(parsed)) {
           parsed.forEach((u: SystemUser) => {
             if (u && (u.id || u.name)) {
-              const userKey = u.id || `user_${u.name}_${u.role}`;
-              if (!userMap.has(userKey)) {
-                userMap.set(userKey, u);
+              if (!isExcludedUser(u)) {
+                const userKey = u.id || `user_${u.name}_${u.role}`;
+                if (!userMap.has(userKey)) {
+                  userMap.set(userKey, u);
+                }
               }
             }
           });
@@ -166,23 +264,65 @@ export const getUsers = (): SystemUser[] => {
     } catch (e) {}
   });
 
-  if (userMap.size > 0) {
-    return Array.from(userMap.values());
-  }
-  
-  const defaults: SystemUser[] = [
-    { 
+  // Ensure Admin exists
+  const hasAdmin = Array.from(userMap.values()).some(u => u.role === 'admin');
+  if (!hasAdmin) {
+    userMap.set(`admin_${orgId}`, { 
       id: `admin_${orgId}`, 
       name: 'Admin', 
       pin: '1993', 
       role: 'admin',
       organizationId: orgId 
-    }
-  ];
-  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(defaults));
-  safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(defaults));
-  safeSetItem(`bizflow_users_v2`, JSON.stringify(defaults));
-  return defaults;
+    });
+  }
+
+  // Ensure Mirigama Rep exists
+  const hasMirigama = Array.from(userMap.values()).some(u => 
+    u.role === 'rep' && (
+      String(u.name || '').toLowerCase().includes('mirigama') || 
+      String(u.name || '').includes('මීරිගම') ||
+      String(u.activeArea || '').toLowerCase().includes('mirigama') ||
+      String(u.activeArea || '').includes('මීරිගම') ||
+      String(u.id || '').toLowerCase().includes('mirigama')
+    )
+  );
+  if (!hasMirigama) {
+    userMap.set('rep_mirigama', {
+      id: 'rep_mirigama',
+      name: 'Mirigama Rep',
+      pin: '1234',
+      role: 'rep',
+      activeArea: 'Mirigama',
+      organizationId: orgId
+    });
+  }
+
+  // Ensure Galewela Rep exists
+  const hasGalewela = Array.from(userMap.values()).some(u => 
+    u.role === 'rep' && (
+      String(u.name || '').toLowerCase().includes('galewela') || 
+      String(u.name || '').includes('ගලේවෙල') ||
+      String(u.activeArea || '').toLowerCase().includes('galewela') ||
+      String(u.activeArea || '').includes('ගලේවෙල') ||
+      String(u.id || '').toLowerCase().includes('galewela')
+    )
+  );
+  if (!hasGalewela) {
+    userMap.set('rep_galewela', {
+      id: 'rep_galewela',
+      name: 'Galewela Rep',
+      pin: '1234',
+      role: 'rep',
+      activeArea: 'Galewela',
+      organizationId: orgId
+    });
+  }
+
+  const finalUsers = Array.from(userMap.values());
+  safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(finalUsers));
+  safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(finalUsers));
+  safeSetItem(`bizflow_users_v2`, JSON.stringify(finalUsers));
+  return finalUsers;
 };
 
 
@@ -2167,7 +2307,7 @@ export const getSalesHistory = (): any[] => {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
           parsed.forEach((s: any) => {
-            if (s) {
+            if (s && isSaleKeptForMirigamaGalewelaOrAdmin(s)) {
               const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || (s.date && s.customer ? `${s.date}_${s.customer}_${s.total || s.netAmount}` : ''));
               if (key && !salesMap.has(key)) {
                 salesMap.set(key, s);
@@ -2179,7 +2319,8 @@ export const getSalesHistory = (): any[] => {
     } catch (e) {}
   });
 
-  return Array.from(salesMap.values());
+  const finalSales = Array.from(salesMap.values());
+  return finalSales;
 };
 
 export const saveCustomers = (customers: any[]) => {
@@ -2318,13 +2459,109 @@ export const syncAllFromCloud = async () => {
       if (!uDoc.exists() && orgId !== 'default') {
         uDoc = await getDoc(doc(db, 'system', `org_default_users`));
       }
-      if (uDoc.exists() && uDoc.data()?.data) {
-        const arr = uDoc.data().data;
-        if (Array.isArray(arr) && arr.length > 0) {
-          safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(arr));
-          safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(arr));
-          safeSetItem(`bizflow_users_v2`, JSON.stringify(arr));
+      
+      let fetchedUsers: any[] = [];
+      if (uDoc.exists() && uDoc.data()?.data && Array.isArray(uDoc.data().data)) {
+        fetchedUsers = uDoc.data().data;
+      }
+
+      // If system doc is empty, try fetching from users and reps collections
+      if (fetchedUsers.length === 0) {
+        const { getDocs, collection, query, limit } = await import('firebase/firestore');
+        const [uSnap, rSnap] = await Promise.all([
+          getDocs(query(collection(db, 'users'), limit(50))).catch(() => null),
+          getDocs(query(collection(db, 'reps'), limit(50))).catch(() => null)
+        ]);
+        if (uSnap && !uSnap.empty) {
+          uSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) fetchedUsers.push({ ...data, id: data.id || d.id });
+          });
         }
+        if (rSnap && !rSnap.empty) {
+          rSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) fetchedUsers.push({ ...data, id: data.id || d.id, role: data.role || 'rep' });
+          });
+        }
+      }
+
+      const userMap = new Map<string, SystemUser>();
+      // Add local users first
+      const localUsers = getUsers();
+      localUsers.forEach(u => {
+        if (!isExcludedUser(u)) {
+          const key = u.id || `user_${u.name}_${u.role}`;
+          userMap.set(key, u);
+        }
+      });
+
+      // Merge fetched users
+      fetchedUsers.forEach((u: any) => {
+        if (u && !isExcludedUser(u)) {
+          const key = u.id || `user_${u.name}_${u.role}`;
+          userMap.set(key, u);
+        }
+      });
+
+      // Always guarantee Admin exists
+      if (!Array.from(userMap.values()).some(u => u.role === 'admin')) {
+        userMap.set(`admin_${orgId}`, { 
+          id: `admin_${orgId}`, 
+          name: 'Admin', 
+          pin: '1993', 
+          role: 'admin',
+          organizationId: orgId 
+        });
+      }
+
+      // Always guarantee Mirigama Rep exists
+      if (!Array.from(userMap.values()).some(u => 
+        u.role === 'rep' && (
+          String(u.name || '').toLowerCase().includes('mirigama') || 
+          String(u.name || '').includes('මීරිගම') ||
+          String(u.activeArea || '').toLowerCase().includes('mirigama') ||
+          String(u.activeArea || '').includes('මීරිගම') ||
+          String(u.id || '').toLowerCase().includes('mirigama')
+        )
+      )) {
+        userMap.set('rep_mirigama', {
+          id: 'rep_mirigama',
+          name: 'Mirigama Rep',
+          pin: '1234',
+          role: 'rep',
+          activeArea: 'Mirigama',
+          organizationId: orgId
+        });
+      }
+
+      // Always guarantee Galewela Rep exists
+      if (!Array.from(userMap.values()).some(u => 
+        u.role === 'rep' && (
+          String(u.name || '').toLowerCase().includes('galewela') || 
+          String(u.name || '').includes('ගලේවෙල') ||
+          String(u.activeArea || '').toLowerCase().includes('galewela') ||
+          String(u.activeArea || '').includes('ගලේවෙල') ||
+          String(u.id || '').toLowerCase().includes('galewela')
+        )
+      )) {
+        userMap.set('rep_galewela', {
+          id: 'rep_galewela',
+          name: 'Galewela Rep',
+          pin: '1234',
+          role: 'rep',
+          activeArea: 'Galewela',
+          organizationId: orgId
+        });
+      }
+
+      const mergedUsers = Array.from(userMap.values());
+      safeSetItem(`bizflow_${orgId}_users_v2`, JSON.stringify(mergedUsers));
+      safeSetItem(`bizflow_MYM-BIZFLOW_users_v2`, JSON.stringify(mergedUsers));
+      safeSetItem(`bizflow_users_v2`, JSON.stringify(mergedUsers));
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'users', data: mergedUsers } }));
       }
     } catch (e) {}
 
