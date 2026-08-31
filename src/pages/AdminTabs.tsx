@@ -7,7 +7,7 @@ import {
   TrendingUp, Users, DollarSign, Package, AlertTriangle, ShieldCheck, 
   Plus, Edit2, Trash2, ArrowUpRight, ArrowDownLeft, FileText, Check, 
   X, HelpCircle, Save, Settings, Play, CloudLightning, Info, ShoppingCart, Truck, Search, Database, RefreshCw, Upload, Zap, MessageSquare,
-  Printer, RotateCcw, Building2
+  Printer, RotateCcw, Building2, Download
 } from 'lucide-react';
 import { 
   getActiveOrgId, getUsers, saveUsers, SystemUser, getRepInventory, saveRepInventory, 
@@ -2736,24 +2736,16 @@ export function CreditBillsTab() {
   const orgId = getActiveOrgId();
   const [sales, setSales] = useState<any[]>(() => {
     try {
-      const stored = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || 
-                     localStorage.getItem(`bizflow_MYM-BIZFLOW_sales_v1`) || 
-                     localStorage.getItem(`bizflow_default_sales_v1`) || 
-                     localStorage.getItem('bizflow_sales_v1');
-      if (stored) return JSON.parse(stored).filter(isCreditBill);
+      return getSalesHistory().filter(isCreditBill);
     } catch (e) {}
     return [];
   });
 
   const loadCloudSales = async () => {
     try {
-      const data = await fetchTableData('sales');
-      if (data && Array.isArray(data)) {
-        localStorage.setItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(data));
-        localStorage.setItem(`bizflow_MYM-BIZFLOW_sales_v1`, JSON.stringify(data));
-        localStorage.setItem('bizflow_sales_v1', JSON.stringify(data));
-        setSales(data.filter(isCreditBill));
-      }
+      await fetchTableData('sales');
+      const all = getSalesHistory();
+      setSales(all.filter(isCreditBill));
     } catch (err) {
       console.warn("Failed to fetch sales for CreditBillsTab", err);
     }
@@ -2763,26 +2755,18 @@ export function CreditBillsTab() {
     loadCloudSales();
 
     const handleSync = (e: any) => {
-      const table = e.detail?.table;
-      if (table === 'sales') {
-        try {
-          const stored = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || 
-                         localStorage.getItem(`bizflow_MYM-BIZFLOW_sales_v1`) || 
-                         localStorage.getItem(`bizflow_default_sales_v1`) || 
-                         localStorage.getItem('bizflow_sales_v1');
-          if (stored) {
-            setSales(JSON.parse(stored).filter(isCreditBill));
-          } else if (e.detail?.data && Array.isArray(e.detail.data)) {
-            setSales(e.detail.data.filter(isCreditBill));
-          }
-        } catch (err) {}
+      const table = e?.detail?.table;
+      if (!table || table === 'sales' || table === 'all') {
+        setSales(getSalesHistory().filter(isCreditBill));
       }
     };
     window.addEventListener('bizflow_sync', handleSync);
     window.addEventListener('bizflow_sales_updated', handleSync);
+    window.addEventListener('storage', handleSync);
     return () => {
       window.removeEventListener('bizflow_sync', handleSync);
       window.removeEventListener('bizflow_sales_updated', handleSync);
+      window.removeEventListener('storage', handleSync);
     };
   }, [orgId]);
 
@@ -4413,9 +4397,11 @@ export function RepsTab({ items, setItems, suppliers, setSuppliers }: { items: a
       setReps(getUsers().filter(u => u.role === 'rep'));
     };
     window.addEventListener('bizflow_sync', handleSync);
+    window.addEventListener('storage', handleSync);
     const interval = setInterval(handleSync, 5000);
     return () => {
       window.removeEventListener('bizflow_sync', handleSync);
+      window.removeEventListener('storage', handleSync);
       clearInterval(interval);
     };
   }, []);
@@ -5197,6 +5183,7 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
   const [logoUrl, setLogoUrl] = useState(settings.logoUrl || '');
   const [storageKB, setStorageKB] = useState(() => getStorageUsageKB());
   const [isPurging, setIsPurging] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const handleCleanCacheNow = async () => {
     setIsPurging(true);
@@ -5212,6 +5199,95 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
     } finally {
       setIsPurging(false);
     }
+  };
+
+  const handleExportData = () => {
+    try {
+      const exportObject: Record<string, string> = {};
+      const keys = Object.keys(localStorage);
+      keys.forEach(key => {
+        if (key.startsWith('bizflow_') || key === 'app_logo' || key === 'bizflow_lang') {
+          const val = localStorage.getItem(key);
+          if (val) {
+            exportObject[key] = val;
+          }
+        }
+      });
+
+      const backupObj = {
+        backupVersion: "1.0",
+        exportedAt: new Date().toISOString(),
+        orgId: getActiveOrgId(),
+        data: exportObject
+      };
+
+      const dataStr = JSON.stringify(backupObj, null, 2);
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+
+      const exportFileDefaultName = `bizflow_backup_${getActiveOrgId() || 'all'}_${new Date().toISOString().slice(0,10)}.json`;
+
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', exportFileDefaultName);
+      linkElement.click();
+    } catch (err) {
+      alert(lang === 'si' ? 'දත්ත Export කිරීම අසාර්ථකයි.' : 'Data export failed.');
+    }
+  };
+
+  const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileReader = new FileReader();
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    fileReader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        if (!parsed || !parsed.data || typeof parsed.data !== 'object') {
+          throw new Error('Invalid format');
+        }
+
+        const confirmMsg = lang === 'si' 
+          ? 'අවධානයයි: මෙමගින් දැනට ඔබගේ උපකරණයේ ඇති දත්ත වෙනුවට මෙම Backup ගොනුවේ ඇති දත්ත ආදේශ කරනු ඇත. ඉදිරියට යාමට අවශ්‍යද?' 
+          : 'Warning: This will restore and overwrite the local data on this device with the backup data. Do you want to proceed?';
+        
+        if (confirm(confirmMsg)) {
+          const dataMap = parsed.data;
+          
+          // Clear old local data
+          Object.keys(localStorage).forEach(key => {
+            if (key.startsWith('bizflow_') || key === 'app_logo' || key === 'bizflow_lang') {
+              localStorage.removeItem(key);
+            }
+          });
+
+          // Set imported keys
+          Object.keys(dataMap).forEach(key => {
+            if (key.startsWith('bizflow_') || key === 'app_logo' || key === 'bizflow_lang') {
+              localStorage.setItem(key, dataMap[key]);
+            }
+          });
+
+          // CRITICAL: Clear synced signatures & TX IDs so the sync engine scans and uploads all 
+          // imported local records to the new active cloud Firestore database on restart
+          localStorage.removeItem('bizflow_synced_signatures_v2');
+          localStorage.removeItem('bizflow_synced_signatures_v1');
+          localStorage.removeItem('bizflow_processed_tx_ids_v1');
+
+          alert(lang === 'si' 
+            ? 'දත්ත සාර්ථකව Restore කරන ලදී! පද්ධතිය අලුතින් ආරම්භ වන අතර සියලුම දත්ත Cloud Database එක සමඟ ස්වයංක්‍රීයව සමමුහුර්ත (sync) වනු ඇත.' 
+            : 'Data restored successfully! The application will now reload and automatically sync all imported data to the cloud database.'
+          );
+          window.location.reload();
+        }
+      } catch (err) {
+        alert(lang === 'si' 
+          ? 'දත්ත Restore කිරීම අසාර්ථකයි. කරුණාකර නිවැරදි Backup (JSON) ගොනුවක් තෝරන්න.' 
+          : 'Failed to restore data. Please make sure you selected a valid backup (JSON) file.'
+        );
+      }
+    };
+    fileReader.readAsText(file);
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -5502,6 +5578,186 @@ export function SettingsTab({ lang }: { lang: 'en' | 'si' }) {
               ? (lang === 'si' ? 'පිරිසිදු කරමින්...' : 'Purging...') 
               : (lang === 'si' ? 'Cache පිරිසිදු කර Speed Up කරන්න' : 'Clean Cache & Speed Up')}
           </button>
+        </div>
+      </div>
+
+      {/* --- ALL-IN-ONE DATA BACKUP & RESTORE CARD --- */}
+      <div className="bg-gradient-to-br from-indigo-900 via-purple-950 to-slate-900 text-white p-6 rounded-3xl shadow-xl space-y-4 border border-indigo-500/30">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-indigo-500/20 rounded-2xl flex items-center justify-center text-indigo-400 border border-indigo-500/30">
+              <Database size={24} />
+            </div>
+            <div>
+              <h3 className="font-display text-xl font-bold">
+                {lang === 'si' ? 'දත්ත බැකප් සහ රීස්ටෝර් (Backup & Restore)' : 'Data Backup & Restore'}
+              </h3>
+              <p className="text-xs text-indigo-200/80">
+                {lang === 'si' 
+                  ? 'සියලුම දත්ත එක ක්ලික් එකකින් බාගත කර වෙනත් ඇප් එකකට පහසුවෙන් ඇතුලත් කරන්න' 
+                  : 'Download all app data in one click or upload to restore on another device'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Export Action */}
+          <div className="bg-white/5 p-4 rounded-2xl border border-white/10 flex flex-col justify-between space-y-3">
+            <div>
+              <span className="text-xs text-indigo-300 font-bold uppercase tracking-wider block mb-1">
+                {lang === 'si' ? '📤 දත්ත බාගත කිරීම' : '📤 Export / Download'}
+              </span>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                {lang === 'si' 
+                  ? 'මෙම ඇප් එකෙහි ඇති සියලුම විකුණුම් බිල්පත්, පාරිභෝගිකයින්, භාණ්ඩ සහ සැකසුම් (JSON) ගොනුවක් ලෙස බාගත කරන්න.' 
+                  : 'Download a backup file containing all your local sales records, customers, items, logo, and system settings.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportData}
+              className="w-full bg-indigo-500 hover:bg-indigo-400 active:scale-95 text-slate-950 font-bold py-2.5 px-5 rounded-xl text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-500/20"
+            >
+              <Download size={14} />
+              {lang === 'si' ? 'දත්ත බාගත කරන්න (Backup Now)' : 'Download Backup File'}
+            </button>
+          </div>
+
+          {/* Import Action */}
+          <div className="bg-white/5 p-4 rounded-2xl border border-white/10 flex flex-col justify-between space-y-3">
+            <div>
+              <span className="text-xs text-purple-300 font-bold uppercase tracking-wider block mb-1">
+                {lang === 'si' ? '📥 දත්ත ඇතුලත් කිරීම' : '📥 Import / Restore'}
+              </span>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                {lang === 'si' 
+                  ? 'මීට පෙර බාගත කරන ලද Backup (JSON) ගොනුවක් තෝරා මෙම ඇප් එක වෙත සියලුම දත්ත නැවත ඇතුලත් කරන්න.' 
+                  : 'Upload a previously downloaded backup JSON file to restore and load all data onto this device.'}
+              </p>
+            </div>
+            <label className="w-full bg-purple-500 hover:bg-purple-400 active:scale-95 text-slate-950 font-bold py-2.5 px-5 rounded-xl text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-purple-500/20 cursor-pointer text-center">
+              <Upload size={14} className="inline mr-1" />
+              <span>{lang === 'si' ? 'බැකප් එකක් තෝරන්න (Restore)' : 'Upload Backup File'}</span>
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={handleImportData}
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* --- EXTERNAL VERCEL SITE DATA IMPORT GUIDE --- */}
+      <div className="bg-slate-900 border border-slate-800 text-white p-6 rounded-3xl shadow-xl space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-400 border border-emerald-500/20">
+            <Zap size={24} />
+          </div>
+          <div>
+            <h3 className="font-display text-lg font-bold text-slate-100">
+              {lang === 'si' ? 'වෙනත් ඇප් එකකින් දත්ත ගේන්න (Migrate from Vercel App)' : 'Migrate from Vercel / External App'}
+            </h3>
+            <p className="text-xs text-slate-400">
+              {lang === 'si' 
+                ? 'ඔබගේ පැරණි Vercel ඇප් එකේ (https://my-m-t2kn.vercel.app) ඇති සියලුම දත්ත මෙහි එකතු කරන්න' 
+                : 'Follow these steps to copy all data from your old Vercel site directly into this workspace.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3.5 text-xs text-slate-300 bg-slate-950/50 p-4 rounded-2xl border border-slate-800/60">
+          <div className="flex gap-2.5">
+            <span className="w-5 h-5 bg-emerald-500/20 text-emerald-400 font-bold rounded-full flex items-center justify-center shrink-0">1</span>
+            <p className="leading-relaxed">
+              {lang === 'si' 
+                ? 'පළමුව, ඔබගේ පැරණි ඇප් එක (https://my-m-t2kn.vercel.app) වෙනත් Tab එකකින් විවෘත කරන්න.' 
+                : 'First, open your old app URL (https://my-m-t2kn.vercel.app) in a new browser tab.'}
+              <a 
+                href="https://my-m-t2kn.vercel.app" 
+                target="_blank" 
+                rel="noreferrer" 
+                className="text-emerald-400 hover:underline font-bold ml-1.5 inline-flex items-center gap-0.5"
+              >
+                {lang === 'si' ? 'ඇප් එක විවෘත කරන්න' : 'Open Old App'} <ArrowUpRight size={12} />
+              </a>
+            </p>
+          </div>
+
+          <div className="flex gap-2.5">
+            <span className="w-5 h-5 bg-emerald-500/20 text-emerald-400 font-bold rounded-full flex items-center justify-center shrink-0">2</span>
+            <p className="leading-relaxed">
+              {lang === 'si' 
+                ? 'එහි ඕනෑම තැනක Right-Click කර Inspect (පරීක්ෂා කරන්න) ඔබා, ඉන්පසු Console ටැබ් එකට යන්න (හෝ F12 ඔබන්න).' 
+                : 'Right-click anywhere on that page, click "Inspect", and switch to the "Console" tab (or press F12 on your keyboard).'}
+            </p>
+          </div>
+
+          <div className="flex gap-2.5">
+            <span className="w-5 h-5 bg-emerald-500/20 text-emerald-400 font-bold rounded-full flex items-center justify-center shrink-0">3</span>
+            <div className="space-y-2 flex-1">
+              <p className="leading-relaxed">
+                {lang === 'si' 
+                  ? 'පහත ඇති "Migration Code එක කොපි කරන්න" බොත්තම ඔබා, එම කේතය අර පැරණි ඇප් එකෙහි Console එකෙහි Paste කර Enter ඔබන්න. එවිට ඔබගේ දත්ත ඇතුලත් Backup ගොනුවක් බාගත වනු ඇත.' 
+                  : 'Click the button below to copy the migration script. Paste it inside that Console and press Enter. A migration file will download instantly.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  const migrationCode = `(function() {
+  const exportObject = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && (key.startsWith('bizflow_') || key === 'app_logo' || key === 'bizflow_lang')) {
+      exportObject[key] = localStorage.getItem(key);
+    }
+  }
+  const backupObj = {
+    backupVersion: "1.0-migration",
+    exportedAt: new Date().toISOString(),
+    orgId: "MYM-BIZFLOW",
+    data: exportObject
+  };
+  const dataStr = JSON.stringify(backupObj, null, 2);
+  const blob = new Blob([dataStr], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = "bizflow_migration_" + new Date().toISOString().slice(0,10) + ".json";
+  a.click();
+  URL.revokeObjectURL(url);
+  alert("Migration backup file downloaded! Now go back to your AI Studio app and upload this file.");
+})();`;
+                  navigator.clipboard.writeText(migrationCode);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 3000);
+                }}
+                className={`w-full sm:w-auto py-2 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-95 ${
+                  copied 
+                    ? 'bg-emerald-500 text-slate-950 shadow-emerald-500/20' 
+                    : 'bg-white/10 hover:bg-white/15 text-white border border-white/10'
+                }`}
+              >
+                {copied ? <Check size={14} /> : <FileText size={14} />}
+                <span>
+                  {copied 
+                    ? (lang === 'si' ? 'කේතය කොපි විය! (Copied!)' : 'Code Copied!') 
+                    : (lang === 'si' ? 'Migration Code එක කොපි කරන්න' : 'Copy Migration Script')}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <span className="w-5 h-5 bg-emerald-500/20 text-emerald-400 font-bold rounded-full flex items-center justify-center shrink-0">4</span>
+            <p className="leading-relaxed">
+              {lang === 'si' 
+                ? 'නැවත මෙම ඇප් එක වෙත පැමිණ, ඉහත ඇති "Upload Backup File" බොත්තම ඔබා බාගත කරන ලද ගොනුව තෝරන්න.' 
+                : 'Finally, come back here and click "Upload Backup File" to upload the downloaded migration JSON file.'}
+            </p>
+          </div>
         </div>
       </div>
 

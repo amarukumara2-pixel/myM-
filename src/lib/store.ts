@@ -121,64 +121,21 @@ export const DEFAULT_USERS: SystemUser[] = [
     pin: '1993', 
     role: 'admin',
     organizationId: 'MYM-BIZFLOW' 
-  },
-  {
-    id: 'rep_mirigama',
-    name: 'Mirigama Rep',
-    pin: '1234',
-    role: 'rep',
-    activeArea: 'Mirigama',
-    organizationId: 'MYM-BIZFLOW'
-  },
-  {
-    id: 'rep_galewela',
-    name: 'Galewela Rep',
-    pin: '1234',
-    role: 'rep',
-    activeArea: 'Galewela',
-    organizationId: 'MYM-BIZFLOW'
   }
 ];
 
 export const isExcludedUser = (u: any): boolean => {
   if (!u) return true;
-  const name = String(u.name || '').toLowerCase();
-  const id = String(u.id || '').toLowerCase();
-  const area = String(u.activeArea || u.area || '').toLowerCase();
-
-  // Exclude deleted sample reps: Nimal, Kamal, Chamod
-  if (
-    name.includes('nimal') || name.includes('නිමාල්') || id.includes('nimal') ||
-    name.includes('kamal') || name.includes('කමල්') || id.includes('kamal') ||
-    name.includes('chamod') || name.includes('චමෝද්') || id.includes('chamod') ||
-    area.includes('chamod')
-  ) {
-    return true;
-  }
   return false;
 };
 
 export const isMirigamaOrGalewelaOrAdmin = (u: any): boolean => {
   if (!u) return false;
-  return !isExcludedUser(u);
+  return true;
 };
 
 export const isSaleKeptForMirigamaGalewelaOrAdmin = (s: any): boolean => {
   if (!s) return false;
-  const repIdStr = String(s.repId || '').toLowerCase();
-  const repNameStr = String(s.repName || s.salesPerson || s.rep || '').toLowerCase();
-  const areaStr = String(s.area || s.route || s.activeArea || '').toLowerCase();
-
-  // Explicitly exclude deleted sample reps: Nimal, Kamal, Chamod
-  if (
-    repIdStr.includes('nimal') || repNameStr.includes('nimal') || repNameStr.includes('නිමාල්') ||
-    repIdStr.includes('kamal') || repNameStr.includes('kamal') || repNameStr.includes('කමල්') ||
-    repIdStr.includes('chamod') || repNameStr.includes('chamod') || repNameStr.includes('චමෝද්') ||
-    areaStr.includes('chamod')
-  ) {
-    return false;
-  }
-
   return true;
 };
 
@@ -187,45 +144,7 @@ export const isSamplePerson = (_str: string) => {
 };
 
 export const purgeNimalKamal = () => {
-  // Purge only deleted sample reps (Nimal, Kamal, Chamod) and their bills
-  const orgId = getActiveOrgId();
-  const validUsers = getUsers().filter(u => !isExcludedUser(u));
-  saveUsers(validUsers);
-
-  const validSales = getSalesHistory().filter(isSaleKeptForMirigamaGalewelaOrAdmin);
-  saveSalesHistory(validSales);
-
-  Promise.all([import('firebase/firestore'), import('./sync')]).then(async ([ {doc, collection, getDocs}, {db, safeDeleteDoc} ]) => {
-    try {
-      safeDeleteDoc(doc(db, 'users', 'chamod'));
-      safeDeleteDoc(doc(db, 'users', 'rep_chamod'));
-      safeDeleteDoc(doc(db, 'reps', 'chamod'));
-      safeDeleteDoc(doc(db, 'reps', 'rep_chamod'));
-      safeDeleteDoc(doc(db, 'users', 'nimal'));
-      safeDeleteDoc(doc(db, 'users', 'rep_nimal'));
-      safeDeleteDoc(doc(db, 'reps', 'nimal'));
-      safeDeleteDoc(doc(db, 'reps', 'rep_nimal'));
-      safeDeleteDoc(doc(db, 'users', 'kamal'));
-      safeDeleteDoc(doc(db, 'users', 'rep_kamal'));
-      safeDeleteDoc(doc(db, 'reps', 'kamal'));
-      safeDeleteDoc(doc(db, 'reps', 'rep_kamal'));
-
-      const snapUsers = await getDocs(collection(db, 'users'));
-      snapUsers.forEach(d => {
-        const data = d.data();
-        if (isExcludedUser({ ...data, id: d.id })) {
-          safeDeleteDoc(doc(db, 'users', d.id));
-        }
-      });
-      const snapReps = await getDocs(collection(db, 'reps'));
-      snapReps.forEach(d => {
-        const data = d.data();
-        if (isExcludedUser({ ...data, id: d.id })) {
-          safeDeleteDoc(doc(db, 'reps', d.id));
-        }
-      });
-    } catch (e) {}
-  });
+  // No-op
 };
 
 export const getUsers = (): SystemUser[] => {
@@ -273,48 +192,6 @@ export const getUsers = (): SystemUser[] => {
       pin: '1993', 
       role: 'admin',
       organizationId: orgId 
-    });
-  }
-
-  // Ensure Mirigama Rep exists
-  const hasMirigama = Array.from(userMap.values()).some(u => 
-    u.role === 'rep' && (
-      String(u.name || '').toLowerCase().includes('mirigama') || 
-      String(u.name || '').includes('මීරිගම') ||
-      String(u.activeArea || '').toLowerCase().includes('mirigama') ||
-      String(u.activeArea || '').includes('මීරිගම') ||
-      String(u.id || '').toLowerCase().includes('mirigama')
-    )
-  );
-  if (!hasMirigama) {
-    userMap.set('rep_mirigama', {
-      id: 'rep_mirigama',
-      name: 'Mirigama Rep',
-      pin: '1234',
-      role: 'rep',
-      activeArea: 'Mirigama',
-      organizationId: orgId
-    });
-  }
-
-  // Ensure Galewela Rep exists
-  const hasGalewela = Array.from(userMap.values()).some(u => 
-    u.role === 'rep' && (
-      String(u.name || '').toLowerCase().includes('galewela') || 
-      String(u.name || '').includes('ගලේවෙල') ||
-      String(u.activeArea || '').toLowerCase().includes('galewela') ||
-      String(u.activeArea || '').includes('ගලේවෙල') ||
-      String(u.id || '').toLowerCase().includes('galewela')
-    )
-  );
-  if (!hasGalewela) {
-    userMap.set('rep_galewela', {
-      id: 'rep_galewela',
-      name: 'Galewela Rep',
-      pin: '1234',
-      role: 'rep',
-      activeArea: 'Galewela',
-      organizationId: orgId
     });
   }
 
@@ -2222,14 +2099,8 @@ export const getAdminInventory = (): any[] => {
                    localStorage.getItem('bizflow_inventory_v1');
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length >= REAL_INVENTORY.length) {
-        const cleanItems = parsed.filter((item: any) => 
-          !item.name?.includes('Munchee Super') && 
-          !item.name?.includes('Munchee Lemon') && 
-          !item.name?.includes('Anchor Milk') && 
-          !item.name?.includes('Watawala Tea')
-        );
-        if (cleanItems.length >= REAL_INVENTORY.length) return cleanItems;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
       }
     }
   } catch (e) {}
@@ -2462,15 +2333,15 @@ export const syncAllFromCloud = async () => {
       
       let fetchedUsers: any[] = [];
       if (uDoc.exists() && uDoc.data()?.data && Array.isArray(uDoc.data().data)) {
-        fetchedUsers = uDoc.data().data;
+        fetchedUsers = [...uDoc.data().data];
       }
 
-      // If system doc is empty, try fetching from users and reps collections
-      if (fetchedUsers.length === 0) {
+      // Always query users and reps collections to ensure no reps are missed
+      try {
         const { getDocs, collection, query, limit } = await import('firebase/firestore');
         const [uSnap, rSnap] = await Promise.all([
-          getDocs(query(collection(db, 'users'), limit(50))).catch(() => null),
-          getDocs(query(collection(db, 'reps'), limit(50))).catch(() => null)
+          getDocs(query(collection(db, 'users'), limit(500))).catch(() => null),
+          getDocs(query(collection(db, 'reps'), limit(500))).catch(() => null)
         ]);
         if (uSnap && !uSnap.empty) {
           uSnap.docs.forEach(d => {
@@ -2484,6 +2355,8 @@ export const syncAllFromCloud = async () => {
             if (data) fetchedUsers.push({ ...data, id: data.id || d.id, role: data.role || 'rep' });
           });
         }
+      } catch (err) {
+        console.warn('Sync users notice:', err);
       }
 
       const userMap = new Map<string, SystemUser>();
@@ -2512,46 +2385,6 @@ export const syncAllFromCloud = async () => {
           pin: '1993', 
           role: 'admin',
           organizationId: orgId 
-        });
-      }
-
-      // Always guarantee Mirigama Rep exists
-      if (!Array.from(userMap.values()).some(u => 
-        u.role === 'rep' && (
-          String(u.name || '').toLowerCase().includes('mirigama') || 
-          String(u.name || '').includes('මීරිගම') ||
-          String(u.activeArea || '').toLowerCase().includes('mirigama') ||
-          String(u.activeArea || '').includes('මීරිගම') ||
-          String(u.id || '').toLowerCase().includes('mirigama')
-        )
-      )) {
-        userMap.set('rep_mirigama', {
-          id: 'rep_mirigama',
-          name: 'Mirigama Rep',
-          pin: '1234',
-          role: 'rep',
-          activeArea: 'Mirigama',
-          organizationId: orgId
-        });
-      }
-
-      // Always guarantee Galewela Rep exists
-      if (!Array.from(userMap.values()).some(u => 
-        u.role === 'rep' && (
-          String(u.name || '').toLowerCase().includes('galewela') || 
-          String(u.name || '').includes('ගලේවෙල') ||
-          String(u.activeArea || '').toLowerCase().includes('galewela') ||
-          String(u.activeArea || '').includes('ගලේවෙල') ||
-          String(u.id || '').toLowerCase().includes('galewela')
-        )
-      )) {
-        userMap.set('rep_galewela', {
-          id: 'rep_galewela',
-          name: 'Galewela Rep',
-          pin: '1234',
-          role: 'rep',
-          activeArea: 'Galewela',
-          organizationId: orgId
         });
       }
 
@@ -2589,33 +2422,76 @@ export const syncAllFromCloud = async () => {
       }
     } catch (e) {}
 
-    // 5.1 Fetch sales summary document
+    // 5.1 Fetch sales summary documents and root collections
     try {
-      let salesDoc = await getDoc(doc(db, 'system', `org_${orgId}_sales`));
-      if (!salesDoc.exists() && orgId !== 'MYM-BIZFLOW') {
-        salesDoc = await getDoc(doc(db, 'system', `org_MYM-BIZFLOW_sales`));
-      }
-      if (!salesDoc.exists() && orgId !== 'default') {
-        salesDoc = await getDoc(doc(db, 'system', `org_default_sales`));
-      }
-      if (salesDoc.exists() && salesDoc.data()?.data && Array.isArray(salesDoc.data().data)) {
-        const sArr = salesDoc.data().data;
-        const currentSales = getSalesHistory();
-        const salesMap = new Map<string, any>();
-        currentSales.forEach(s => {
-          const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
-          if (key) salesMap.set(key, s);
-        });
-        sArr.forEach((s: any) => {
-          const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
-          if (key && !salesMap.has(key)) salesMap.set(key, s);
-        });
-        const mergedSales = Array.from(salesMap.values());
+      const { getDocs, collection, query, limit } = await import('firebase/firestore');
+      const [salesDoc1, salesDoc2, salesDoc3, sysSales, sysBills, sysHistory, sSnap, bSnap, iSnap, tSnap] = await Promise.all([
+        getDoc(doc(db, 'system', `org_${orgId}_sales`)).catch(() => null),
+        getDoc(doc(db, 'system', 'org_MYM-BIZFLOW_sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'org_default_sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'sales')).catch(() => null),
+        getDoc(doc(db, 'system', 'bills')).catch(() => null),
+        getDoc(doc(db, 'system', 'sales_history')).catch(() => null),
+        getDocs(query(collection(db, 'sales'), limit(3000))).catch(() => null),
+        getDocs(query(collection(db, 'bills'), limit(3000))).catch(() => null),
+        getDocs(query(collection(db, 'invoices'), limit(3000))).catch(() => null),
+        getDocs(query(collection(db, 'transactions'), limit(3000))).catch(() => null),
+      ]);
+
+      const currentSales = getSalesHistory();
+      const salesMap = new Map<string, any>();
+      currentSales.forEach(s => {
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+        if (key) salesMap.set(key, s);
+      });
+
+      const processDocSnap = (d: any) => {
+        const data = d.data();
+        if (!data) return;
+        const s = { ...data, id: data.id || d.id };
+        const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || d.id);
+        if (key) {
+          const existing = salesMap.get(key);
+          if (!existing || (Number(s.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+            salesMap.set(key, s);
+          }
+        }
+      };
+
+      [sSnap, bSnap, iSnap, tSnap].forEach(snap => {
+        if (snap && !snap.empty) {
+          snap.docs.forEach(processDocSnap);
+        }
+      });
+
+      [salesDoc1, salesDoc2, salesDoc3, sysSales, sysBills, sysHistory].forEach(docSnap => {
+        if (docSnap && docSnap.exists() && Array.isArray(docSnap.data()?.data)) {
+          docSnap.data().data.forEach((s: any) => {
+            if (!s) return;
+            const key = String(s.id || s.billNo || s.invoiceNo || s.transactionId || s.txId || '');
+            if (key) {
+              const existing = salesMap.get(key);
+              if (!existing || (Number(s.updatedAt || 0) >= Number(existing.updatedAt || 0))) {
+                salesMap.set(key, s);
+              }
+            }
+          });
+        }
+      });
+
+      const mergedSales = Array.from(salesMap.values());
+      if (mergedSales.length > 0) {
         safeSetItem(`bizflow_${orgId}_sales_v1`, JSON.stringify(mergedSales));
         safeSetItem('bizflow_MYM-BIZFLOW_sales_v1', JSON.stringify(mergedSales));
         safeSetItem('bizflow_sales_v1', JSON.stringify(mergedSales));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('bizflow_sync', { detail: { table: 'sales', data: mergedSales } }));
+          window.dispatchEvent(new CustomEvent('bizflow_sales_updated', { detail: { data: mergedSales } }));
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Sync sales notice:', e);
+    }
 
     // 5.2 Fetch customers summary document
     try {
@@ -2756,12 +2632,20 @@ export const syncAllFromCloud = async () => {
     }
 
     if (Array.isArray(invColData) && invColData.length > 0) {
+      const invMap = new Map<string, any>();
       const existing = getAdminInventory();
-      if (!existing || existing.length === 0) {
-        safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(invColData));
-        safeSetItem('bizflow_MYM-BIZFLOW_admin_inventory_v1', JSON.stringify(invColData));
-        safeSetItem('bizflow_admin_inventory_v1', JSON.stringify(invColData));
-      }
+      existing.forEach(item => {
+        const key = String(item.id || item.code || item.name || '');
+        if (key) invMap.set(key, item);
+      });
+      invColData.forEach(item => {
+        const key = String(item.id || item.code || item.name || '');
+        if (key) invMap.set(key, item);
+      });
+      const mergedInv = Array.from(invMap.values());
+      safeSetItem(`bizflow_${orgId}_admin_inventory_v1`, JSON.stringify(mergedInv));
+      safeSetItem('bizflow_MYM-BIZFLOW_admin_inventory_v1', JSON.stringify(mergedInv));
+      safeSetItem('bizflow_admin_inventory_v1', JSON.stringify(mergedInv));
     }
 
     if (typeof window !== 'undefined') {

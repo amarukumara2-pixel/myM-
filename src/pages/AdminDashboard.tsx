@@ -87,7 +87,7 @@ export default function AdminDashboard() {
   const logo = useLogo();
   const navigate = useNavigate();
   const [lang, setLang] = useState<'en'|'si'>((localStorage.getItem('bizflow_lang') as 'en'|'si') || 'en');
-  const [repsList, setRepsList] = useState<any[]>([]);
+  const [repsList, setRepsList] = useState<any[]>(() => getUsers().filter(u => u.role === 'rep'));
 
   useEffect(() => {
     const loadUsers = () => {
@@ -96,10 +96,17 @@ export default function AdminDashboard() {
     };
     loadUsers();
     
-    window.addEventListener('bizflow_sync', (e: any) => {
-      if (e.detail?.table === 'users') loadUsers();
-    });
-    return () => window.removeEventListener('bizflow_sync', loadUsers);
+    const handleUsersSync = (e: any) => {
+      if (!e?.detail?.table || e.detail?.table === 'users' || e.detail?.table === 'all') {
+        loadUsers();
+      }
+    };
+    window.addEventListener('bizflow_sync', handleUsersSync);
+    window.addEventListener('storage', loadUsers);
+    return () => {
+      window.removeEventListener('bizflow_sync', handleUsersSync);
+      window.removeEventListener('storage', loadUsers);
+    };
   }, []);
   
   const handleLangChange = () => {
@@ -132,33 +139,27 @@ export default function AdminDashboard() {
     return saved ? JSON.parse(saved) : { role: 'admin' };
   });
 
-  const [allSalesData, setAllSalesData] = useState<any[]>(() => {
-    const orgId = getActiveOrgId();
-    const stored = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
-    return stored ? JSON.parse(stored) : [];
-  });
+  const [allSalesData, setAllSalesData] = useState<any[]>(() => getSalesHistory());
 
   useEffect(() => {
     fetchTableData('sales').then(data => {
       if (data && Array.isArray(data)) {
-        setAllSalesData(data);
+        setAllSalesData(getSalesHistory());
       }
     });
 
     const handleSalesUpdate = (e: any) => {
-      if (e?.detail?.table === 'sales' || !e?.detail?.table) {
-        const orgId = getActiveOrgId();
-        const stored = localStorage.getItem(`bizflow_${orgId}_sales_v1`) || localStorage.getItem('bizflow_sales_v1');
-        if (stored) {
-          try { setAllSalesData(JSON.parse(stored)); } catch (err) {}
-        }
+      if (e?.detail?.table === 'sales' || !e?.detail?.table || e?.detail?.table === 'all') {
+        setAllSalesData(getSalesHistory());
       }
     };
     window.addEventListener('bizflow_sync', handleSalesUpdate);
     window.addEventListener('bizflow_sales_updated', handleSalesUpdate);
+    window.addEventListener('storage', handleSalesUpdate);
     return () => {
       window.removeEventListener('bizflow_sync', handleSalesUpdate);
       window.removeEventListener('bizflow_sales_updated', handleSalesUpdate);
+      window.removeEventListener('storage', handleSalesUpdate);
     };
   }, []);
 

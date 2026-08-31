@@ -252,7 +252,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   }
 }
 
-import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory, getUsers, isMirigamaOrGalewelaOrAdmin, isSaleKeptForMirigamaGalewelaOrAdmin } from './store';
+import { getActiveOrgId, getAdminInventory, getCustomers, getSuppliers, getSalesHistory, getUsers, isExcludedUser, isMirigamaOrGalewelaOrAdmin, isSaleKeptForMirigamaGalewelaOrAdmin } from './store';
 
 export interface SyncPayload {
   id: string;
@@ -827,7 +827,7 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
     const localUsers = getUsers();
     localUsers.forEach(u => {
       if (!u) return;
-      if (isMirigamaOrGalewelaOrAdmin(u)) {
+      if (!isExcludedUser(u)) {
         const key = u.id || `user_${u.name}_${u.role}`;
         userMap.set(key, u);
       }
@@ -845,7 +845,7 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
           const data: any = docSnap.data();
           if (!data) return;
           const u: any = { ...data, id: data.id || docSnap.id };
-          if (isMirigamaOrGalewelaOrAdmin(u)) {
+          if (!isExcludedUser(u)) {
             const key = u.id || `user_${u.name}_${u.role}`;
             if (key) {
               const existing = userMap.get(key);
@@ -853,8 +853,6 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
                 userMap.set(key, u);
               }
             }
-          } else if (docSnap.id.includes('chamod') || docSnap.id.includes('nimal') || docSnap.id.includes('kamal')) {
-            safeDeleteDoc(doc(db, 'users', docSnap.id));
           }
         });
       }
@@ -864,13 +862,11 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
           const data: any = docSnap.data();
           if (!data) return;
           const u: any = { ...data, id: data.id || docSnap.id, role: data.role || 'rep' };
-          if (isMirigamaOrGalewelaOrAdmin(u)) {
+          if (!isExcludedUser(u)) {
             const key = u.id || `user_${u.name}_${u.role}`;
             if (key && !userMap.has(key)) {
               userMap.set(key, u);
             }
-          } else if (docSnap.id.includes('chamod') || docSnap.id.includes('nimal') || docSnap.id.includes('kamal')) {
-            safeDeleteDoc(doc(db, 'reps', docSnap.id));
           }
         });
       }
@@ -892,7 +888,7 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
         if (Array.isArray(uArr)) {
           uArr.forEach((u: any) => {
             if (!u) return;
-            if (isMirigamaOrGalewelaOrAdmin(u)) {
+            if (!isExcludedUser(u)) {
               const key = u.id || `user_${u.name}_${u.role}`;
               if (key && !userMap.has(key)) {
                 userMap.set(key, u);
@@ -910,30 +906,6 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
         name: 'Admin',
         pin: '1993',
         role: 'admin',
-        organizationId: orgId
-      });
-    }
-
-    // Ensure Mirigama Rep exists
-    if (!Array.from(userMap.values()).some(u => u.role === 'rep' && (String(u.name || '').toLowerCase().includes('mirigama') || String(u.activeArea || '').toLowerCase().includes('mirigama') || String(u.name || '').includes('මීරිගම') || String(u.activeArea || '').includes('මීරිගම')))) {
-      userMap.set('rep_mirigama', {
-        id: 'rep_mirigama',
-        name: 'Mirigama Rep',
-        pin: '1234',
-        role: 'rep',
-        activeArea: 'Mirigama',
-        organizationId: orgId
-      });
-    }
-
-    // Ensure Galewela Rep exists
-    if (!Array.from(userMap.values()).some(u => u.role === 'rep' && (String(u.name || '').toLowerCase().includes('galewela') || String(u.activeArea || '').toLowerCase().includes('galewela') || String(u.name || '').includes('ගලේවෙල') || String(u.activeArea || '').includes('ගලේවෙල')))) {
-      userMap.set('rep_galewela', {
-        id: 'rep_galewela',
-        name: 'Galewela Rep',
-        pin: '1234',
-        role: 'rep',
-        activeArea: 'Galewela',
         organizationId: orgId
       });
     }
@@ -989,8 +961,6 @@ export const forceUploadAllToCloud = async (): Promise<{ salesCount: number; rep
               salesMap.set(key, s);
             }
           }
-        } else {
-          safeDeleteDoc(doc(db, 'sales', docSnap.id));
         }
       };
 
@@ -1336,23 +1306,90 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
       }
     }
 
-    let q: any;
     const limitNum = options?.limitCount || 2000;
+    let cloudDocs: any[] = [];
 
-    if (maxTimestamp > 0) {
-      // Incremental delta sync: only request records created or modified after maxTimestamp
-      try {
-        q = query(
-          collection(db, table),
-          where('updatedAt', '>', maxTimestamp),
-          limit(limitNum)
-        );
-      } catch {
-        q = query(collection(db, table), limit(limitNum));
+    // Query primary collection
+    try {
+      const snapshot = await getDocs(query(collection(db, table), limit(limitNum)));
+      if (!snapshot.empty) {
+        trackFirestoreUsage('read', snapshot.docs.length);
+        snapshot.docs.forEach((d: any) => {
+          const data = d.data();
+          if (data) {
+            cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          }
+        });
       }
-    } else {
-      // Initial load: limit query to recent records to protect quota
-      q = query(collection(db, table), limit(limitNum));
+    } catch (e) {
+      console.warn(`Query for collection ${table} notice:`, e);
+    }
+
+    // Query related collections if applicable
+    if (table === 'sales') {
+      try {
+        const [bSnap, iSnap] = await Promise.all([
+          getDocs(query(collection(db, 'bills'), limit(limitNum))).catch(() => null),
+          getDocs(query(collection(db, 'invoices'), limit(limitNum))).catch(() => null)
+        ]);
+        if (bSnap && !bSnap.empty) {
+          trackFirestoreUsage('read', bSnap.docs.length);
+          bSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          });
+        }
+        if (iSnap && !iSnap.empty) {
+          trackFirestoreUsage('read', iSnap.docs.length);
+          iSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          });
+        }
+      } catch (e) {}
+    } else if (table === 'inventory') {
+      try {
+        const [pSnap, itemSnap] = await Promise.all([
+          getDocs(query(collection(db, 'products'), limit(limitNum))).catch(() => null),
+          getDocs(query(collection(db, 'items'), limit(limitNum))).catch(() => null)
+        ]);
+        if (pSnap && !pSnap.empty) {
+          trackFirestoreUsage('read', pSnap.docs.length);
+          pSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          });
+        }
+        if (itemSnap && !itemSnap.empty) {
+          trackFirestoreUsage('read', itemSnap.docs.length);
+          itemSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          });
+        }
+      } catch (e) {}
+    } else if (table === 'customers') {
+      try {
+        const cSnap = await getDocs(query(collection(db, 'clients'), limit(limitNum))).catch(() => null);
+        if (cSnap && !cSnap.empty) {
+          trackFirestoreUsage('read', cSnap.docs.length);
+          cSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id });
+          });
+        }
+      } catch (e) {}
+    } else if (table === 'users') {
+      try {
+        const rSnap = await getDocs(query(collection(db, 'reps'), limit(limitNum))).catch(() => null);
+        if (rSnap && !rSnap.empty) {
+          trackFirestoreUsage('read', rSnap.docs.length);
+          rSnap.docs.forEach(d => {
+            const data = d.data();
+            if (data) cloudDocs.push({ ...data, id: data.id || d.id, docId: d.id, role: data.role || 'rep' });
+          });
+        }
+      } catch (e) {}
     }
 
     const getFallbackDocs = (tbl: string) => {
@@ -1362,32 +1399,6 @@ export const fetchTableData = async (table: string, options?: { forceAll?: boole
       if (tbl === 'sales') return getSalesHistory();
       return [];
     };
-
-    const snapshotPromise = getDocs(q);
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 25000));
-
-    let snapshot: any = null;
-    try {
-      snapshot = await Promise.race([snapshotPromise, timeoutPromise]);
-    } catch (e) {
-      console.warn('Collection query timed out or failed, falling back:', e);
-    }
-
-    let cloudDocs: any[] = [];
-    if (snapshot && !snapshot.empty) {
-      trackFirestoreUsage('read', snapshot.docs.length);
-      cloudDocs = snapshot.docs
-        .map((d: any) => {
-          const data = d.data();
-          return { ...data, id: data.id || d.id, docId: d.id };
-        })
-        .filter((item: any) => {
-          if (!item) return false;
-          if (!item.organizationId && !item.orgId) return true;
-          const oId = String(item.organizationId || item.orgId);
-          return oId === orgId || oId === 'default' || oId === 'MYM-BIZFLOW' || oId.toLowerCase() === orgId.toLowerCase();
-        });
-    }
 
     // Secondary backup check: fetch system array doc for this table
     try {

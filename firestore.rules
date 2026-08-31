@@ -33,10 +33,22 @@ service cloud.firestore {
     }
 
     match /users/{document=**} {
-      allow read, write: if true; // Open temporarily for migration
+      allow read, write: if true;
+    }
+
+    match /reps/{document=**} {
+      allow read, write: if true;
     }
 
     match /inventory/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /products/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /items/{document=**} {
       allow read, write: if true;
     }
 
@@ -44,7 +56,27 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    match /bills/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /invoices/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /transactions/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /orders/{document=**} {
+      allow read, write: if true;
+    }
+
     match /customers/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /clients/{document=**} {
       allow read, write: if true;
     }
 
